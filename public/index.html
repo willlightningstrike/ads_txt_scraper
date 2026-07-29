@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ads.txt Sellers Validator</title>
+    <meta
+      name="description"
+      content="Validate supplier monetization rights by comparing a publisher's ads.txt entries with platform sellers.json data."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div class="hero__badge">Supply Chain Verification</div>
+        <h1>Ads.txt ↔ Sellers.json Validator</h1>
+        <p class="hero__copy">
+          Cross-check publisher ads.txt entries against exchange sellers.json files to spot valid relationships,
+          mismatches, missing seller IDs, and confidential records.
+        </p>
+      </header>
+
+      <main class="layout">
+        <section class="panel panel--form">
+          <div class="panel__heading">
+            <h2>Validate a Seller ID</h2>
+            <p>Enter a secure `ads.txt` URL and the account or seller ID you want to verify.</p>
+          </div>
+
+          <form id="validator-form" novalidate>
+            <label class="field">
+              <span>ads.txt URL</span>
+              <input
+                id="adsTxtUrl"
+                name="adsTxtUrl"
+                type="url"
+                placeholder="https://publisher.com/ads.txt"
+                autocomplete="url"
+                required
+              />
+            </label>
+
+            <label class="field">
+              <span>Account / Seller ID</span>
+              <input
+                id="accountId"
+                name="accountId"
+                type="text"
+                placeholder="pub-1234567890"
+                autocomplete="off"
+                required
+              />
+            </label>
+
+            <div class="actions">
+              <button id="submit-button" type="submit">Validate Monetization Rights</button>
+              <button id="copy-json-button" type="button" class="button button--ghost" hidden>
+                Copy JSON
+              </button>
+            </div>
+
+            <p id="form-message" class="form-message" role="status" aria-live="polite"></p>
+          </form>
+        </section>
+
+        <section class="panel panel--results" aria-live="polite">
+          <div class="panel__heading">
+            <h2>Validation Report</h2>
+            <p>Results appear here with per-platform context and domain alignment checks.</p>
+          </div>
+
+          <div id="loading-state" class="loading" hidden>
+            <div class="spinner" aria-hidden="true"></div>
+            <p>Fetching ads.txt and sellers.json files...</p>
+          </div>
+
+          <div id="empty-state" class="empty-state">
+            <h3>Ready when you are</h3>
+            <p>Run a validation to see summary metrics, seller details, and supply-chain warnings.</p>
+          </div>
+
+          <div id="results" hidden>
+            <div id="summary-grid" class="summary-grid"></div>
+            <div id="results-meta" class="results-meta"></div>
+            <div id="records-list" class="records-list"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
