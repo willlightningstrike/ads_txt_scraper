@@ -16,6 +16,10 @@ const MAX_CACHEABLE_JSON_BYTES = Number(process.env.MAX_CACHEABLE_JSON_BYTES || 
 const SELLERS_CACHE_TTL_MS = 60 * 60 * 1000;
 const SELLERS_CACHE_SIZE = Number(process.env.SELLERS_CACHE_SIZE || 10);
 
+// ECONNABORTED is axios's own timeout, ERR_CANCELED is the abort signal, and
+// ETIMEDOUT is the OS connect timeout. Any of them means the deadline passed.
+const TIMEOUT_ERROR_CODES = new Set(["ECONNABORTED", "ERR_CANCELED", "ETIMEDOUT"]);
+
 const KNOWN_SELLERS_JSON_OVERRIDES = {
   "google.com": {
     sellerJsonUrl: "https://storage.googleapis.com/adx-rtb-dictionaries/sellers.json",
@@ -391,6 +395,10 @@ async function fetchJson(url) {
 function buildAxiosOptions(maxBytes, responseType = "text", pinnedAddress = null) {
   const options = {
     timeout: REQUEST_TIMEOUT_MS,
+    // axios's timeout is a socket-inactivity timer and never arms while a TCP
+    // handshake is still stalling, which lets the OS connect timeout (75s on
+    // macOS) govern instead. The signal is a hard wall-clock deadline.
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     maxContentLength: maxBytes,
     maxBodyLength: maxBytes,
     responseType,
@@ -434,8 +442,8 @@ async function fetchWithRedirects(url, maxBytes, responseType = "text") {
         throw error;
       }
 
-      if (error.code === "ECONNABORTED") {
-        throw createHttpError(504, "Remote server timed out while fetching a required file.");
+      if (TIMEOUT_ERROR_CODES.has(error.code)) {
+        throw createHttpError(504, `Remote server timed out while fetching ${currentTarget.url.hostname}.`);
       }
 
       if (error.code === "ERR_BAD_RESPONSE" || error.code === "ERR_BAD_REQUEST") {
@@ -473,7 +481,14 @@ async function requestValidatedUrl(target, maxBytes, responseType) {
 }
 
 function shouldRetryWithAnotherAddress(error) {
-  return !error.response && !error.statusCode;
+  if (error.response || error.statusCode) {
+    return false;
+  }
+
+  // A timeout already spent the whole budget. Replaying it against a sibling
+  // address multiplies the wait by the number of resolved IPs without making
+  // an unresponsive host any more likely to answer.
+  return !TIMEOUT_ERROR_CODES.has(error.code);
 }
 
 async function validateExternalUrl(rawUrl) {
@@ -703,6 +718,8 @@ module.exports = {
   app,
   buildAxiosOptions,
   createPinnedLookup,
+  fetchWithRedirects,
   isPrivateIp,
+  shouldRetryWithAnotherAddress,
   validateExternalUrl
 };
