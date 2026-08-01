@@ -4,6 +4,8 @@ A small web tool that verifies a publisher's declared monetization rights by cro
 
 You give it an `ads.txt` URL and an account/seller ID. It finds every line in that `ads.txt` claiming the ID, then fetches the corresponding `sellers.json` from each ad system and checks that the two files tell the same story.
 
+![The validator UI: a form for the ads.txt URL and seller ID, beside the validation report panel where results appear](docs/screenshot.png)
+
 ## What it checks
 
 For each matching `ads.txt` entry, the validator reports one of four statuses:
