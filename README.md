@@ -44,11 +44,11 @@ No database, API keys, or accounts are required.
 ## Setup
 
 ```bash
-git clone https://github.com/<your-username>/<your-repo>.git
+git clone https://github.com/willlightningstrike/ads_txt_scraper.git
 ```
 
 ```bash
-cd <your-repo>
+cd ads_txt_scraper
 ```
 
 ```bash
