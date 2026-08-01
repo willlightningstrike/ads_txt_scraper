@@ -160,4 +160,4 @@ test/server.test.js    Tests for the URL-validation layer
 
 ## License
 
-Not currently licensed. Add a `LICENSE` file if you intend others to use or contribute to this code.
+[MIT](LICENSE) © 2026 willlightningstrike
