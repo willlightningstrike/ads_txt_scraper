@@ -170,7 +170,7 @@ function renderResults(payload) {
           }
         </div>
         <div class="badge badge--${escapeHtml(toBadgeClass(record.status))}">
-          ${escapeHtml(getStatusIcon(record.status))} ${escapeHtml(record.statusLabel)}
+          ${escapeHtml(record.statusLabel)}
         </div>
       </div>
 
@@ -301,21 +301,6 @@ function isSecureUrl(value) {
     return parsed.protocol === "https:";
   } catch {
     return false;
-  }
-}
-
-function getStatusIcon(status) {
-  switch (status) {
-    case "valid":
-      return "VALID";
-    case "mismatch":
-      return "WARN";
-    case "not_found":
-      return "MISS";
-    case "unreachable":
-      return "WAIT";
-    default:
-      return "INFO";
   }
 }
 
