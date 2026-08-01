@@ -2,6 +2,7 @@ const form = document.getElementById("validator-form");
 const adsTxtUrlInput = document.getElementById("adsTxtUrl");
 const accountIdInput = document.getElementById("accountId");
 const submitButton = document.getElementById("submit-button");
+const cancelButton = document.getElementById("cancel-button");
 const copyJsonButton = document.getElementById("copy-json-button");
 const formMessage = document.getElementById("form-message");
 const loadingState = document.getElementById("loading-state");
@@ -11,7 +12,14 @@ const summaryGrid = document.getElementById("summary-grid");
 const resultsMeta = document.getElementById("results-meta");
 const recordsList = document.getElementById("records-list");
 
+// The server caps each outbound fetch at REQUEST_TIMEOUT_MS (20s by default) and
+// runs the ads.txt fetch before the sellers.json fetches, so a legitimate request
+// tops out near 40s. This is a backstop for what the server cannot bound: a lost
+// connection, a crashed process, or a machine that slept mid-request.
+const CLIENT_TIMEOUT_MS = 60_000;
+
 let latestPayload = null;
+let inFlight = null;
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -29,6 +37,9 @@ form.addEventListener("submit", async (event) => {
     return;
   }
 
+  abortInFlight("superseded");
+  const request = startRequest();
+
   setLoading(true);
   setFormMessage("");
 
@@ -38,7 +49,8 @@ form.addEventListener("submit", async (event) => {
       headers: {
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({ adsTxtUrl, accountId })
+      body: JSON.stringify({ adsTxtUrl, accountId }),
+      signal: request.controller.signal
     });
 
     const payload = await response.json();
@@ -51,13 +63,21 @@ form.addEventListener("submit", async (event) => {
     copyJsonButton.hidden = false;
     setFormMessage("Validation completed.", "success");
   } catch (error) {
-    latestPayload = null;
-    copyJsonButton.hidden = true;
-    showEmptyState();
-    setFormMessage(error.message || "Something went wrong during validation.", "error");
+    // A superseded request lost ownership of the UI to a newer submission, so
+    // it must not overwrite that request's results or error message.
+    if (request.reason !== "superseded") {
+      latestPayload = null;
+      copyJsonButton.hidden = true;
+      showEmptyState();
+      setFormMessage(describeFailure(error, request), request.reason === "cancelled" ? "neutral" : "error");
+    }
   } finally {
-    setLoading(false);
+    finishRequest(request);
   }
+});
+
+cancelButton.addEventListener("click", () => {
+  abortInFlight("cancelled");
 });
 
 copyJsonButton.addEventListener("click", async () => {
@@ -212,12 +232,57 @@ function showEmptyState() {
 
 function setLoading(isLoading) {
   submitButton.disabled = isLoading;
+  cancelButton.hidden = !isLoading;
   loadingState.hidden = !isLoading;
 
   if (isLoading) {
     results.hidden = true;
     emptyState.hidden = true;
   }
+}
+
+function startRequest() {
+  const request = { controller: new AbortController(), reason: null };
+
+  request.deadline = setTimeout(() => {
+    request.reason = "timeout";
+    request.controller.abort();
+  }, CLIENT_TIMEOUT_MS);
+
+  inFlight = request;
+  return request;
+}
+
+function abortInFlight(reason) {
+  if (!inFlight) {
+    return;
+  }
+
+  inFlight.reason = reason;
+  inFlight.controller.abort();
+}
+
+function finishRequest(request) {
+  clearTimeout(request.deadline);
+
+  // Only the request that still owns the UI clears the loading state; a
+  // superseded one would otherwise stop the spinner for its replacement.
+  if (inFlight === request) {
+    inFlight = null;
+    setLoading(false);
+  }
+}
+
+function describeFailure(error, request) {
+  if (request.reason === "cancelled") {
+    return "Validation cancelled.";
+  }
+
+  if (request.reason === "timeout") {
+    return `No response after ${Math.round(CLIENT_TIMEOUT_MS / 1000)} seconds. The server may be unreachable.`;
+  }
+
+  return error.message || "Something went wrong during validation.";
 }
 
 function setFormMessage(message, tone = "neutral") {
