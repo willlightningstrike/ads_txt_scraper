@@ -107,6 +107,7 @@ function renderResults(payload) {
     ["Unreachable", payload.summary.unreachable],
     ["Confidential", payload.summary.confidential],
     ["Domain Match", payload.summary.domainMatches],
+    ["Domain Related", payload.summary.domainRelated],
     ["Domain Mismatch", payload.summary.domainMismatches]
   ];
 
@@ -145,7 +146,9 @@ function renderResults(payload) {
   payload.records.forEach((record, index) => {
     const card = document.createElement("article");
     card.className = "record-card";
-    card.style.animationDelay = `${index * 55}ms`;
+    // Cap the stagger. Growing it per card left the tail of a large result set
+    // invisible for minutes, which read as a truncated report.
+    card.style.animationDelay = `${Math.min(index, 12) * 55}ms`;
 
     const sellerName = record.seller?.name || "Seller not present";
     const sellerType = record.seller?.sellerType || "Unavailable";
@@ -154,9 +157,11 @@ function renderResults(payload) {
     const domainTone =
       record.domainCheck?.status === "match"
         ? "detail__value--ok"
-        : record.domainCheck?.status === "mismatch"
-          ? "detail__value--warn"
-          : "detail__value--muted";
+        : record.domainCheck?.status === "related"
+          ? "detail__value--info"
+          : record.domainCheck?.status === "mismatch"
+            ? "detail__value--warn"
+            : "detail__value--muted";
 
     card.innerHTML = `
       <div class="record-card__top">

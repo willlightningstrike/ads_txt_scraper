@@ -1,4 +1,3 @@
-const cors = require("cors");
 const dns = require("dns").promises;
 const express = require("express");
 const axios = require("axios");
@@ -15,6 +14,8 @@ const MAX_JSON_BYTES = Number(process.env.MAX_JSON_BYTES || 128 * 1024 * 1024);
 const MAX_CACHEABLE_JSON_BYTES = Number(process.env.MAX_CACHEABLE_JSON_BYTES || 10 * 1024 * 1024);
 const SELLERS_CACHE_TTL_MS = 60 * 60 * 1000;
 const SELLERS_CACHE_SIZE = Number(process.env.SELLERS_CACHE_SIZE || 10);
+const MAX_CONCURRENT_LOOKUPS = Number(process.env.MAX_CONCURRENT_LOOKUPS || 6);
+const MAX_REDIRECT_HOPS = 4;
 
 // ECONNABORTED is axios's own timeout, ERR_CANCELED is the abort signal, and
 // ETIMEDOUT is the OS connect timeout. Any of them means the deadline passed.
@@ -31,7 +32,8 @@ const KNOWN_SELLERS_JSON_OVERRIDES = {
   }
 };
 
-app.use(cors());
+// No CORS middleware: the frontend is served from this same origin, so allowing
+// other origins would only let arbitrary pages drive this server's outbound fetches.
 app.use(express.json({ limit: "100kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -76,13 +78,20 @@ class LruTtlCache {
 }
 
 const sellersCache = new LruTtlCache(SELLERS_CACHE_SIZE, SELLERS_CACHE_TTL_MS);
+const inFlightSellersFetches = new Map();
 
 const privateIpv4Blocklist = new net.BlockList();
+privateIpv4Blocklist.addSubnet("0.0.0.0", 8, "ipv4");
 privateIpv4Blocklist.addSubnet("10.0.0.0", 8, "ipv4");
+privateIpv4Blocklist.addSubnet("100.64.0.0", 10, "ipv4");
 privateIpv4Blocklist.addSubnet("127.0.0.0", 8, "ipv4");
 privateIpv4Blocklist.addSubnet("169.254.0.0", 16, "ipv4");
 privateIpv4Blocklist.addSubnet("172.16.0.0", 12, "ipv4");
+privateIpv4Blocklist.addSubnet("192.0.0.0", 24, "ipv4");
 privateIpv4Blocklist.addSubnet("192.168.0.0", 16, "ipv4");
+privateIpv4Blocklist.addSubnet("198.18.0.0", 15, "ipv4");
+privateIpv4Blocklist.addSubnet("224.0.0.0", 4, "ipv4");
+privateIpv4Blocklist.addSubnet("240.0.0.0", 4, "ipv4");
 
 const privateIpv6Blocklist = new net.BlockList();
 privateIpv6Blocklist.addAddress("::", "ipv6");
@@ -105,16 +114,34 @@ app.post("/api/validate", async (req, res) => {
     });
   }
 
+  // Cancelling, timing out, or navigating away closes the connection. Nothing
+  // can read the result after that, so stop doing the work. This has to hang off
+  // the response: req emits "close" as soon as its body finishes streaming, which
+  // is every request, not just the abandoned ones.
+  const controller = new AbortController();
+  res.on("close", () => {
+    if (!res.writableEnded) {
+      controller.abort();
+    }
+  });
+
   try {
     const adsTarget = await validateExternalUrl(adsTxtUrl);
     const publisherDomain = adsTarget.hostname;
-    const adsTxtRaw = await fetchText(adsTarget);
+    const adsTxtRaw = await fetchText(adsTarget, controller.signal);
     const adsEntries = parseAdsTxt(adsTxtRaw);
     const matchingEntries = adsEntries.filter((entry) => entry.accountId === accountId);
 
-    const records = await Promise.all(
-      matchingEntries.map((entry) => validateEntry(entry, publisherDomain))
+    const records = await mapWithConcurrency(
+      matchingEntries,
+      MAX_CONCURRENT_LOOKUPS,
+      (entry) => validateEntry(entry, publisherDomain),
+      controller.signal
     );
+
+    if (controller.signal.aborted) {
+      return;
+    }
 
     const summary = summarize(records);
 
@@ -128,6 +155,10 @@ app.post("/api/validate", async (req, res) => {
       records
     });
   } catch (error) {
+    if (controller.signal.aborted) {
+      return;
+    }
+
     const statusCode = error.statusCode || 500;
     return res.status(statusCode).json({
       error: error.message || "Validation failed."
@@ -145,6 +176,24 @@ if (require.main === module) {
   });
 }
 
+async function mapWithConcurrency(items, limit, mapper, signal = null) {
+  const results = new Array(items.length);
+  let cursor = 0;
+
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    // Stop handing out work once the caller has gone away. Lookups already in
+    // flight are left to settle; the queued remainder is what there is to save.
+    while (cursor < items.length && !signal?.aborted) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await mapper(items[index]);
+    }
+  });
+
+  await Promise.all(workers);
+  return results;
+}
+
 async function validateEntry(entry, publisherDomain) {
   const sellersTarget = resolveSellersJsonTarget(entry.adSystemDomain);
   const sellerJsonUrl = sellersTarget.sellerJsonUrl;
@@ -152,7 +201,7 @@ async function validateEntry(entry, publisherDomain) {
   try {
     const sellersPayload = await fetchSellersJson(sellerJsonUrl);
     const seller = sellersPayload.sellers.find(
-      (candidate) => String(candidate.seller_id || "").trim() === entry.accountId
+      (candidate) => candidate && String(candidate.seller_id || "").trim() === entry.accountId
     );
 
     if (!seller) {
@@ -261,9 +310,18 @@ function parseAdsTxtLine(line, lineNumber) {
     return null;
   }
 
+  // An empty ad system domain or account ID cannot identify anything to look up.
+  // An unrecognised relationship is kept: validateSellerType reports it as a
+  // mismatch, which is more useful to a publisher than silently dropping the row.
+  const adSystemDomain = normalizeHostname(fields[0]);
+  const accountId = fields[1];
+  if (!adSystemDomain || !accountId) {
+    return null;
+  }
+
   return {
-    adSystemDomain: normalizeHostname(fields[0]),
-    accountId: fields[1],
+    adSystemDomain,
+    accountId,
     relationship: fields[2].toUpperCase(),
     certificationAuthorityId: fields[3] || null,
     lineNumber,
@@ -315,6 +373,10 @@ function summarize(records) {
         summary.domainMatches += 1;
       }
 
+      if (record.domainCheck?.status === "related") {
+        summary.domainRelated += 1;
+      }
+
       if (record.domainCheck?.status === "mismatch") {
         summary.domainMismatches += 1;
       }
@@ -329,6 +391,7 @@ function summarize(records) {
       unreachable: 0,
       confidential: 0,
       domainMatches: 0,
+      domainRelated: 0,
       domainMismatches: 0
     }
   );
@@ -342,14 +405,21 @@ function compareDomains(publisherDomain, sellerDomain) {
     };
   }
 
-  if (
-    publisherDomain === sellerDomain ||
-    publisherDomain.endsWith(`.${sellerDomain}`) ||
-    sellerDomain.endsWith(`.${publisherDomain}`)
-  ) {
+  if (publisherDomain === sellerDomain) {
     return {
       status: "match",
-      message: `Seller domain ${sellerDomain} aligns with publisher domain ${publisherDomain}.`,
+      message: `Seller domain ${sellerDomain} matches publisher domain ${publisherDomain}.`,
+      sellerDomain
+    };
+  }
+
+  // A suffix relationship is reported separately rather than as a match. Telling
+  // a registrable domain from a public suffix needs the Public Suffix List, so
+  // tenant.example.io under example.io looks identical here to a real subdomain.
+  if (publisherDomain.endsWith(`.${sellerDomain}`) || sellerDomain.endsWith(`.${publisherDomain}`)) {
+    return {
+      status: "related",
+      message: `Seller domain ${sellerDomain} shares a suffix with publisher domain ${publisherDomain}. A shared suffix alone does not establish common ownership.`,
       sellerDomain
     };
   }
@@ -367,45 +437,81 @@ async function fetchSellersJson(url) {
     return cached;
   }
 
+  // Many ads.txt rows share one sellers.json endpoint, and none of them can hit
+  // the cache until the first fetch resolves. Share the request instead.
+  const pending = inFlightSellersFetches.get(url);
+  if (pending) {
+    return pending;
+  }
+
+  const request = loadSellersJson(url).finally(() => {
+    inFlightSellersFetches.delete(url);
+  });
+
+  inFlightSellersFetches.set(url, request);
+  return request;
+}
+
+// Deliberately not cancellable: this promise is shared between every matching
+// ads.txt row that points at the same endpoint, so one caller giving up must not
+// abort the fetch the others are still waiting on. REQUEST_TIMEOUT_MS bounds it.
+async function loadSellersJson(url) {
   const validatedTarget = await validateExternalUrl(url);
-  const response = await fetchJson(validatedTarget);
-  const payload = response.data;
+  const raw = await fetchJsonText(validatedTarget);
+  let payload;
+
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    throw createHttpError(502, "sellers.json was not valid JSON.");
+  }
 
   if (!payload || !Array.isArray(payload.sellers)) {
     throw createHttpError(502, "sellers.json did not include a valid sellers array.");
   }
 
-  const contentLength = Number(response.headers?.["content-length"] || 0);
-  if (contentLength > 0 && contentLength <= MAX_CACHEABLE_JSON_BYTES) {
+  // Measure the decoded body. Content-Length reports compressed bytes, so a
+  // gzip response could otherwise admit far more than the cap into the cache.
+  if (Buffer.byteLength(raw) <= MAX_CACHEABLE_JSON_BYTES) {
     sellersCache.set(url, payload);
   }
 
   return payload;
 }
 
-async function fetchText(url) {
-  const response = await fetchWithRedirects(url, MAX_TEXT_BYTES);
+async function fetchText(url, signal = null) {
+  const response = await fetchWithRedirects(url, MAX_TEXT_BYTES, "text", signal);
   return typeof response.data === "string" ? response.data : String(response.data || "");
 }
 
-async function fetchJson(url) {
-  return fetchWithRedirects(url, MAX_JSON_BYTES, "json");
+async function fetchJsonText(url, signal = null) {
+  const response = await fetchWithRedirects(url, MAX_JSON_BYTES, "json", signal);
+  return typeof response.data === "string" ? response.data : String(response.data || "");
 }
 
-function buildAxiosOptions(maxBytes, responseType = "text", pinnedAddress = null) {
+function buildAxiosOptions(maxBytes, acceptType = "text", pinnedAddress = null, signal = null) {
+  // axios's timeout is a socket-inactivity timer and never arms while a TCP
+  // handshake is still stalling, which lets the OS connect timeout (75s on
+  // macOS) govern instead. The signal is a hard wall-clock deadline.
+  const deadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+
   const options = {
     timeout: REQUEST_TIMEOUT_MS,
-    // axios's timeout is a socket-inactivity timer and never arms while a TCP
-    // handshake is still stalling, which lets the OS connect timeout (75s on
-    // macOS) govern instead. The signal is a hard wall-clock deadline.
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
     maxContentLength: maxBytes,
     maxBodyLength: maxBytes,
-    responseType,
+    // Always take the body as raw text. sellers.json is parsed by hand so its
+    // decoded size can be measured before the cache admits it, and axios would
+    // otherwise JSON.parse the string implicitly whatever responseType said.
+    responseType: "text",
+    transformResponse: [(data) => data],
     maxRedirects: 0,
+    // Axios otherwise honours HTTPS_PROXY, which routes around httpsAgent and
+    // lets the proxy re-resolve the hostname, defeating the pinned lookup below.
+    proxy: false,
     headers: {
       "User-Agent": "ads-sellers-validator/1.0",
-      Accept: responseType === "json" ? "application/json,text/plain;q=0.8,*/*;q=0.5" : "text/plain,*/*;q=0.5"
+      Accept: acceptType === "json" ? "application/json,text/plain;q=0.8,*/*;q=0.5" : "text/plain,*/*;q=0.5"
     },
     validateStatus: (status) => status >= 200 && status < 400
   };
@@ -419,12 +525,13 @@ function buildAxiosOptions(maxBytes, responseType = "text", pinnedAddress = null
   return options;
 }
 
-async function fetchWithRedirects(url, maxBytes, responseType = "text") {
+async function fetchWithRedirects(url, maxBytes, acceptType = "text", signal = null) {
   let currentTarget = isValidatedTarget(url) ? url : await validateExternalUrl(url);
 
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  // One request for the original URL, plus one for each redirect we agree to follow.
+  for (let attempt = 0; attempt <= MAX_REDIRECT_HOPS; attempt += 1) {
     try {
-      const response = await requestValidatedUrl(currentTarget, maxBytes, responseType);
+      const response = await requestValidatedUrl(currentTarget, maxBytes, acceptType, signal);
 
       if (response.status >= 200 && response.status < 300) {
         return response;
@@ -458,7 +565,7 @@ async function fetchWithRedirects(url, maxBytes, responseType = "text") {
   throw createHttpError(502, "Too many redirects while fetching a required file.");
 }
 
-async function requestValidatedUrl(target, maxBytes, responseType) {
+async function requestValidatedUrl(target, maxBytes, acceptType, signal = null) {
   let lastError = null;
 
   // Pin each outbound connection to an address we already validated to avoid DNS rebinding.
@@ -466,7 +573,7 @@ async function requestValidatedUrl(target, maxBytes, responseType) {
     try {
       return await axios.get(
         target.url.toString(),
-        buildAxiosOptions(maxBytes, responseType, address)
+        buildAxiosOptions(maxBytes, acceptType, address, signal)
       );
     } catch (error) {
       lastError = error;
@@ -717,9 +824,13 @@ function createHttpError(statusCode, message) {
 module.exports = {
   app,
   buildAxiosOptions,
+  compareDomains,
   createPinnedLookup,
+  fetchSellersJson,
   fetchWithRedirects,
   isPrivateIp,
+  mapWithConcurrency,
+  parseAdsTxt,
   shouldRetryWithAnotherAddress,
   validateExternalUrl
 };

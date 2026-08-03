@@ -418,6 +418,10 @@ button:disabled {
   color: #b9f6dc;
 }
 
+.detail__value--info {
+  color: var(--info);
+}
+
 .detail__value--warn {
   color: #ffd79f;
 }

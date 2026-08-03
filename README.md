@@ -104,6 +104,7 @@ All settings are optional environment variables:
 | `MAX_JSON_BYTES` | `134217728` (128 MiB) | Max `sellers.json` response size |
 | `MAX_CACHEABLE_JSON_BYTES` | `10485760` (10 MiB) | Max `sellers.json` size eligible for caching |
 | `SELLERS_CACHE_SIZE` | `10` | Number of `sellers.json` files held in the LRU cache |
+| `MAX_CONCURRENT_LOOKUPS` | `6` | Max `sellers.json` fetches in flight for one validation |
 
 Example:
 
@@ -122,7 +123,13 @@ Note that `HOST` defaults to `127.0.0.1`, so the server is only reachable from t
 5. The seller ID is looked up in the `sellers` array and the relationship is validated.
 6. Results, plus domain-alignment and confidentiality checks and a summary tally, are returned as JSON and rendered in the UI.
 
-`sellers.json` responses are cached in memory for one hour under an LRU cache, so repeat lookups against the same ad system are fast. The cache is per-process and is cleared on restart.
+Rows with an empty ad system domain or account ID are skipped, since neither can identify anything to look up. A row whose relationship is neither `DIRECT` nor `RESELLER` is kept and reported as a mismatch rather than dropped silently.
+
+The domain check reports `match` only when the seller domain and publisher domain are identical. A parent/child suffix relationship is reported as `related` instead: distinguishing a real subdomain from two unrelated tenants under a public suffix such as `github.io` would require the Public Suffix List, so the weaker claim is the honest one.
+
+If the browser cancels, times out, or navigates away, the server stops issuing the remaining `sellers.json` lookups instead of running the whole fan-out for a result nobody can read.
+
+`sellers.json` responses are cached in memory for one hour under an LRU cache, so repeat lookups against the same ad system are fast. The cache is per-process and is cleared on restart. Lookups run at most `MAX_CONCURRENT_LOOKUPS` at a time, and matches that share one `sellers.json` endpoint share a single in-flight request rather than each issuing their own.
 
 ### API
 
@@ -141,10 +148,12 @@ Because the server fetches URLs supplied by the user, it includes SSRF protectio
 - HTTPS only, on port 443
 - No credentials embedded in the URL
 - No `localhost`, `.localhost`, or `.local` hostnames
-- Hostnames are resolved via DNS and every resolved address is checked against private, loopback, and link-local IPv4 and IPv6 ranges (including IPv4-mapped IPv6 forms) before any request is made
-- Connections are pinned to the already-validated IP address to prevent DNS rebinding
-- Redirects are followed manually, with each hop re-validated, capped at 4 hops
+- Hostnames are resolved via DNS and every resolved address is checked against private, loopback, link-local, and other special-use IPv4 and IPv6 ranges (including `0.0.0.0/8`, CGNAT, multicast, reserved space, and IPv4-mapped IPv6 forms) before any request is made
+- Connections are pinned to the already-validated IP address to prevent DNS rebinding, and proxy environment variables are ignored so they cannot re-resolve the hostname around that pin
+- Redirects are followed manually, with each hop re-validated, capped at 4 hops (5 requests)
 - Response sizes are capped
+
+The server sends no CORS headers, so only the frontend it serves can call the API — other pages in your browser cannot use it to drive outbound fetches.
 
 All user-supplied strings are HTML-escaped before being inserted into the page.
 
