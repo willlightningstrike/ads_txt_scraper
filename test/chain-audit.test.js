@@ -273,6 +273,19 @@ test("a hostile seller name does not throw and falls back to a safe label", asyn
   assert.equal(result.hops[1].seller.name, "Unknown seller");
 });
 
+test("a hostile seller_type does not throw and degrades to a mismatch, not a pass", async () => {
+  const result = await auditChain(normalized(), {
+    adsEntries: ADS_ENTRIES,
+    originDomain: "dailynews.example",
+    loadSellers: async (url) => url.includes("bigssp")
+      ? { sellers: [{ seller_id: "ex-a-7788", name: "Exchange A", domain: "exchange-a.com", seller_type: { toString: 1 } }] }
+      : SELLERS[url]
+  });
+
+  assert.equal(result.hops[1].checks.sellerTypeValid.status, "fail");
+  assert.equal(result.hops[1].verdict, "broken");
+});
+
 test("a numeric seller_id of 0 is treated as a valid ID, not absent", async () => {
   const result = await auditChain(
     normalized({ nodes: [{ asi: "exchange-a.com", sid: "0", name: null, domain: null, hp: 1, rid: null }] }),
