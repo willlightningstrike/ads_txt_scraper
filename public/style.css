@@ -487,3 +487,69 @@ button:disabled {
     width: 100%;
   }
 }
+
+.field textarea {
+  width: 100%;
+  padding: 15px 16px;
+  border: 1px solid rgba(163, 189, 214, 0.16);
+  border-radius: 16px;
+  background: rgba(6, 16, 26, 0.76);
+  color: var(--text);
+  font: inherit;
+  transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+
+.field textarea:focus {
+  outline: none;
+  border-color: rgba(101, 215, 243, 0.8);
+  box-shadow: 0 0 0 4px rgba(101, 215, 243, 0.14);
+  transform: translateY(-1px);
+}
+
+#ortb-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  resize: vertical;
+}
+
+.extract-card {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.extract-card__rows {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 6px 12px;
+  margin: 10px 0 0;
+  font-size: 0.9rem;
+}
+
+.extract-card__rows dt {
+  color: var(--muted);
+}
+
+.extract-card__rows dd {
+  margin: 0;
+}
+
+.extract-card__prompt {
+  margin-top: 12px;
+}
+
+.extract-card__hint {
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin-top: 6px;
+  line-height: 1.5;
+}
+
+.source-link {
+  color: var(--info);
+}
+
+.source-link--dead {
+  color: var(--muted);
+}

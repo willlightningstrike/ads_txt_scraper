@@ -1,0 +1,173 @@
+import { reduceBidRequest } from "/bid-request-extract.js";
+import { escapeHtml } from "/app.js";
+
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+
+const form = document.getElementById("ortb-form");
+const input = document.getElementById("ortb-input");
+const fileInput = document.getElementById("ortb-file");
+const extractCard = document.getElementById("ortb-extract");
+const message = document.getElementById("ortb-message");
+
+let pendingOverride = "";
+
+fileInput.addEventListener("change", async () => {
+  const file = fileInput.files && fileInput.files[0];
+  if (!file) {
+    return;
+  }
+
+  // Checked before reading: a multi-hundred-megabyte file would otherwise be read into
+  // memory and parsed before anyone could tell the user it was too big.
+  if (file.size > MAX_UPLOAD_BYTES) {
+    setMessage(`That file is ${Math.round(file.size / 1024 / 1024)} MB. The limit is 5 MB.`, "error");
+    fileInput.value = "";
+    return;
+  }
+
+  input.value = await file.text();
+  refreshExtract();
+});
+
+input.addEventListener("input", refreshExtract);
+
+input.addEventListener("dragover", (event) => {
+  event.preventDefault();
+});
+
+input.addEventListener("drop", async (event) => {
+  event.preventDefault();
+  const file = event.dataTransfer?.files?.[0];
+  if (!file) {
+    return;
+  }
+  if (file.size > MAX_UPLOAD_BYTES) {
+    setMessage(`That file is ${Math.round(file.size / 1024 / 1024)} MB. The limit is 5 MB.`, "error");
+    return;
+  }
+  input.value = await file.text();
+  refreshExtract();
+});
+
+function parseCurrent() {
+  const raw = input.value.trim();
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return reduceBidRequest(JSON.parse(raw));
+  } catch {
+    return "invalid";
+  }
+}
+
+function refreshExtract() {
+  const reduced = parseCurrent();
+
+  if (reduced === null) {
+    extractCard.hidden = true;
+    setMessage("");
+    return;
+  }
+
+  if (reduced === "invalid") {
+    extractCard.hidden = true;
+    setMessage("That is not valid JSON.", "error");
+    return;
+  }
+
+  setMessage("");
+  renderExtractCard(reduced);
+}
+
+function renderExtractCard(reduced) {
+  const site = reduced.site || {};
+  const app = reduced.app || {};
+  const nodes = reduced.source?.ext?.schain?.nodes || reduced.source?.schain?.nodes || [];
+  const isApp = Boolean(reduced.app);
+  const domain = isApp ? app.domain : site.domain || hostOf(site.page);
+  const needsInput = !domain;
+
+  extractCard.hidden = false;
+  extractCard.innerHTML = `
+    <details class="extract-card__details" ${needsInput ? "open" : ""}>
+      <summary>Extracted from this request${needsInput ? " — 1 needs input" : ""}</summary>
+      <dl class="extract-card__rows">
+        <dt>Inventory</dt><dd>${escapeHtml(isApp ? "App" : "Site")}</dd>
+        ${isApp
+          ? `<dt>Bundle</dt><dd>${escapeHtml(app.bundle || "—")}</dd>
+             <dt>Store URL</dt><dd>${escapeHtml(app.storeurl || "—")}</dd>`
+          : `<dt>Domain</dt><dd>${escapeHtml(domain || "—")}</dd>`}
+        <dt>Supply chain</dt><dd>${nodes.length} node${nodes.length === 1 ? "" : "s"}</dd>
+      </dl>
+      ${needsInput ? originPrompt(isApp, app.storeurl) : ""}
+    </details>
+  `;
+
+  const overrideField = document.getElementById("ortb-origin-domain");
+  if (overrideField) {
+    overrideField.addEventListener("input", () => {
+      pendingOverride = overrideField.value.trim();
+    });
+  } else {
+    pendingOverride = "";
+  }
+}
+
+function originPrompt(isApp, storeurl) {
+  const file = isApp ? "app-ads.txt" : "ads.txt";
+  // The store listing is literally where the developer domain is published, so linking
+  // it answers "how am I supposed to know this?" rather than just demanding an answer.
+  const storeLink = storeurl ? linkTo(storeurl, "Open the store listing") : "";
+
+  return `
+    <div class="extract-card__prompt">
+      <label class="field">
+        <span>Developer domain</span>
+        <input id="ortb-origin-domain" type="text" placeholder="example.com" autocomplete="off" />
+      </label>
+      <p class="extract-card__hint">
+        Not in the bid request. ${escapeHtml(file)} is hosted on the developer's site from the store
+        listing. Enter the domain and we will fetch <code>https://&lt;domain&gt;/${escapeHtml(file)}</code>.
+        ${storeLink}
+      </p>
+    </div>
+  `;
+}
+
+// Only https links are ever emitted. escapeHtml alone is not enough for an href:
+// an escaped javascript: URI still executes when the user clicks it.
+function safeHref(url) {
+  try {
+    const parsed = new URL(String(url));
+    return parsed.protocol === "https:" ? parsed.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function linkTo(url, label) {
+  const href = safeHref(url);
+  const text = escapeHtml(label);
+  return href
+    ? `<a class="source-link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${text}</a>`
+    : `<span class="source-link source-link--dead">${text}</span>`;
+}
+
+function hostOf(value) {
+  try {
+    return new URL(String(value)).hostname;
+  } catch {
+    return "";
+  }
+}
+
+function setMessage(text, tone = "neutral") {
+  message.textContent = text;
+  message.dataset.tone = tone;
+}
+
+function getOverride() {
+  return pendingOverride;
+}

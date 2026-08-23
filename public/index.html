@@ -73,6 +73,38 @@
           </form>
         </section>
 
+        <section class="panel panel--form">
+          <div class="panel__heading">
+            <h2>Audit a Bid Request</h2>
+            <p>
+              Paste or upload an ORTB bid request. Your browser drops <code>device</code>, <code>user</code>,
+              <code>regs</code> and <code>imp</code> before anything is sent — only <code>id</code>,
+              <code>site</code>, <code>app</code>, <code>dooh</code> and <code>source</code> leave this page, and
+              those are sent whole rather than scrubbed.
+            </p>
+          </div>
+
+          <form id="ortb-form" novalidate>
+            <label class="field">
+              <span>Bid request JSON</span>
+              <textarea id="ortb-input" rows="8" placeholder='{ "site": { "domain": "..." }, "source": { "ext": { "schain": { ... } } } }'></textarea>
+            </label>
+
+            <label class="field">
+              <span>...or upload a .json file</span>
+              <input id="ortb-file" type="file" accept=".json,application/json" />
+            </label>
+
+            <div id="ortb-extract" class="extract-card" hidden></div>
+
+            <div class="actions">
+              <button id="ortb-submit" type="submit">Audit Supply Chain</button>
+            </div>
+
+            <p id="ortb-message" class="form-message" role="status" aria-live="polite"></p>
+          </form>
+        </section>
+
         <section class="panel panel--results" aria-live="polite">
           <div class="panel__heading">
             <h2>Validation Report</h2>
@@ -99,5 +131,6 @@
     </div>
 
     <script src="/app.js" type="module"></script>
+    <script src="/ortb-panel.js" type="module"></script>
   </body>
 </html>
