@@ -77,3 +77,38 @@ test("the allow list is exactly the five documented keys", async () => {
 
   assert.deepEqual([...ALLOWED_TOP_LEVEL_KEYS].sort(), ["app", "dooh", "id", "site", "source"]);
 });
+
+test("a polluted Object.prototype cannot inject an allowed key that was never on the input", async () => {
+  const { reduceBidRequest } = await load();
+
+  Object.prototype.site = "PROTO_LEAK_VALUE";
+  try {
+    const reduced = reduceBidRequest({});
+    assert.deepEqual(reduced, {});
+  } finally {
+    delete Object.prototype.site;
+  }
+
+  assert.equal({}.site, undefined, "Object.prototype pollution leaked past the test");
+});
+
+test("only allowed keys ever appear on the output, no matter what the input carries", async () => {
+  const { reduceBidRequest, ALLOWED_TOP_LEVEL_KEYS } = await load();
+
+  const reduced = reduceBidRequest({
+    id: "1",
+    site: { domain: "a.example" },
+    device: { ip: "203.0.113.9" },
+    user: { id: "u-1" },
+    regs: { gdpr: 1 },
+    imp: [{ id: "1" }],
+    ext: { foo: "bar" },
+    wseat: ["seat-1"],
+    constructor: "not-a-function",
+    toString: "not-a-function-either"
+  });
+
+  for (const key of Object.keys(reduced)) {
+    assert.equal(ALLOWED_TOP_LEVEL_KEYS.includes(key), true, `${key} is not in the allow list`);
+  }
+});
