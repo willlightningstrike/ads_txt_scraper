@@ -137,6 +137,20 @@ test("a confidential seller is unverifiable rather than a pass", async () => {
   assert.equal(result.hops[1].seller.isConfidential, true);
 });
 
+test("a confidential mid-chain seller typed PUBLISHER is broken, not unverifiable", async () => {
+  const result = await auditChain(normalized(), {
+    adsEntries: ADS_ENTRIES,
+    originDomain: "dailynews.example",
+    loadSellers: async (url) => url.includes("bigssp")
+      ? { sellers: [{ seller_id: "ex-a-7788", is_confidential: 1, seller_type: "PUBLISHER" }] }
+      : SELLERS[url]
+  });
+
+  assert.equal(result.hops[1].checks.sellerTypeValid.status, "fail");
+  assert.equal(result.hops[1].checks.chainLink.status, "skip");
+  assert.equal(result.hops[1].verdict, "broken");
+});
+
 // The fixture needs BOTH a broken hop and an unverifiable one, or it cannot test
 // precedence. An unreachable sellers.json yields "unverifiable" by design, so a chain
 // whose only failure is unreachable is an unverifiable chain, not a broken one.
@@ -205,6 +219,93 @@ test("sources list the ads.txt file and every sellers.json touched, deduped", as
   assert.equal(new Set(urls).size, urls.length);
   assert.ok(urls.includes("https://dailynews.example/ads.txt"));
   assert.ok(urls.includes("https://exchange-a.com/sellers.json"));
+});
+
+test("a benign normalizer warning is surfaced but does not flip verdict to broken", async () => {
+  const result = await run({
+    warnings: [{ code: "site_domain_page_mismatch", message: "site.domain differs from the host of site.page." }]
+  });
+
+  assert.equal(result.verdict, "pass");
+  assert.equal(result.firstFailedHop, null);
+  assert.deepEqual(result.summary, { hops: 2, pass: 2, broken: 0, unverifiable: 0, undeclared: 0 });
+
+  const check = result.chainChecks.find((c) => c.code === "site_domain_page_mismatch");
+  assert.ok(check);
+  assert.equal(check.status, "warn");
+});
+
+test("a hostile seller_id does not throw and reports the seller as not found", async () => {
+  const result = await auditChain(normalized(), {
+    adsEntries: ADS_ENTRIES,
+    originDomain: "dailynews.example",
+    loadSellers: async (url) => url.includes("bigssp")
+      ? { sellers: [{ seller_id: { toString: 1 }, name: "Exchange A", domain: "exchange-a.com", seller_type: "INTERMEDIARY" }] }
+      : SELLERS[url]
+  });
+
+  assert.equal(result.hops[1].checks.sellerIdPresent.status, "fail");
+  assert.equal(result.hops[1].verdict, "broken");
+});
+
+test("a hostile seller domain does not throw and degrades instead of crashing", async () => {
+  const result = await auditChain(normalized(), {
+    adsEntries: ADS_ENTRIES,
+    originDomain: "dailynews.example",
+    loadSellers: async (url) => url.includes("bigssp")
+      ? { sellers: [{ seller_id: "ex-a-7788", name: "Exchange A", domain: { toString: 1 }, seller_type: "INTERMEDIARY" }] }
+      : SELLERS[url]
+  });
+
+  assert.equal(result.hops[1].seller.domain, null);
+  assert.equal(result.hops[1].checks.chainLink.status, "fail");
+});
+
+test("a hostile seller name does not throw and falls back to a safe label", async () => {
+  const result = await auditChain(normalized(), {
+    adsEntries: ADS_ENTRIES,
+    originDomain: "dailynews.example",
+    loadSellers: async (url) => url.includes("bigssp")
+      ? { sellers: [{ seller_id: "ex-a-7788", name: { toString: 1 }, domain: "exchange-a.com", seller_type: "INTERMEDIARY" }] }
+      : SELLERS[url]
+  });
+
+  assert.equal(result.hops[1].seller.name, "Unknown seller");
+});
+
+test("a numeric seller_id of 0 is treated as a valid ID, not absent", async () => {
+  const result = await auditChain(
+    normalized({ nodes: [{ asi: "exchange-a.com", sid: "0", name: null, domain: null, hp: 1, rid: null }] }),
+    {
+      adsEntries: [{ adSystemDomain: "exchange-a.com", accountId: "0", relationship: "DIRECT",
+        certificationAuthorityId: null, lineNumber: 1, raw: "exchange-a.com, 0, DIRECT" }],
+      originDomain: "dailynews.example",
+      loadSellers: async () => ({
+        sellers: [{ seller_id: 0, name: "Zero Seller", domain: "dailynews.example", seller_type: "PUBLISHER" }]
+      })
+    }
+  );
+
+  assert.equal(result.hops[0].checks.sellerIdPresent.status, "pass");
+  assert.equal(result.hops[0].seller.sellerId, "0");
+});
+
+test("a sellers.json override domain gets a label matching the URL it actually opens", async () => {
+  const result = await auditChain(
+    normalized({ nodes: [{ asi: "google.com", sid: "pub-1", name: null, domain: null, hp: 1, rid: null }] }),
+    {
+      adsEntries: [{ adSystemDomain: "google.com", accountId: "pub-1", relationship: "DIRECT",
+        certificationAuthorityId: null, lineNumber: 1, raw: "google.com, pub-1, DIRECT" }],
+      originDomain: "dailynews.example",
+      loadSellers: async () => ({
+        sellers: [{ seller_id: "pub-1", name: "Daily News", domain: "dailynews.example", seller_type: "PUBLISHER" }]
+      })
+    }
+  );
+
+  const source = result.sources.find((s) => s.kind === "sellers-json");
+  assert.equal(source.url, "https://storage.googleapis.com/adx-rtb-dictionaries/sellers.json");
+  assert.equal(source.label, "storage.googleapis.com/adx-rtb-dictionaries/sellers.json");
 });
 
 test("an empty node list produces an unverifiable result rather than a pass", async () => {
