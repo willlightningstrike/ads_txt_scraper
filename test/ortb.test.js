@@ -249,3 +249,62 @@ test("a full URL in site.domain is reduced to its host", () => {
   assert.equal(result.origin.domain, "news.example");
   assert.equal(result.origin.resolvedFrom, "site.domain");
 });
+
+test("a hostile site.domain (non-stringifiable) does not throw and leaves domain unresolved", () => {
+  const result = extractBidRequest({ site: { domain: { toString: 1 } } });
+
+  assert.equal(result.origin.kind, "site");
+  assert.equal(result.origin.domain, null);
+  assert.equal(result.origin.resolvedFrom, null);
+});
+
+test("a hostile app.domain (non-stringifiable) does not throw and leaves domain unresolved", () => {
+  const result = extractBidRequest({ app: { domain: { toString: 1 } } });
+
+  assert.equal(result.origin.kind, "app");
+  assert.equal(result.origin.domain, null);
+  assert.equal(result.origin.resolvedFrom, null);
+});
+
+test("a hostile app.bundle (non-stringifiable) does not throw and leaves bundle null", () => {
+  const result = extractBidRequest({ app: { bundle: { toString: 1 } } });
+
+  assert.equal(result.origin.kind, "app");
+  assert.equal(result.origin.bundle, null);
+});
+
+test("a hostile schain node.asi (non-stringifiable) does not throw and the node is dropped", () => {
+  const result = extractBidRequest({
+    site: { domain: "a.example" },
+    source: { ext: { schain: { ver: "1.0", complete: 1, nodes: [
+      { asi: { toString: 1 }, sid: "1" }
+    ] } } }
+  });
+
+  assert.equal(result.nodes.length, 0);
+  assert.ok(result.warnings.some((w) => w.code === "invalid_schain_node"));
+});
+
+test("a hostile schain node.domain (non-stringifiable) does not throw and the node's domain is null", () => {
+  const result = extractBidRequest({
+    site: { domain: "a.example" },
+    source: { ext: { schain: { ver: "1.0", complete: 1, nodes: [
+      { asi: "a.com", sid: "1", domain: { toString: 1 } }
+    ] } } }
+  });
+
+  assert.equal(result.nodes.length, 1);
+  assert.equal(result.nodes[0].domain, null);
+});
+
+test("a hostile schain node.name (non-stringifiable) does not throw and comes back null, not an object", () => {
+  const result = extractBidRequest({
+    site: { domain: "a.example" },
+    source: { ext: { schain: { ver: "1.0", complete: 1, nodes: [
+      { asi: "a.com", sid: "1", name: { toString: 1 } }
+    ] } } }
+  });
+
+  assert.equal(result.nodes.length, 1);
+  assert.equal(result.nodes[0].name, null);
+});
