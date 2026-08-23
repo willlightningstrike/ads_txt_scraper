@@ -20,3 +20,6 @@ docs/superpowers/
 
 # Agent scratch: brainstorm mockups, execution ledgers, review packages
 .superpowers/
+
+# Local agent/editor config
+.claude/
