@@ -318,7 +318,7 @@ function toBadgeClass(status) {
   }
 }
 
-function escapeHtml(value) {
+export function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -327,6 +327,6 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
-function escapeAttribute(value) {
+export function escapeAttribute(value) {
   return escapeHtml(value);
 }
