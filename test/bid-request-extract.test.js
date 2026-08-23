@@ -112,3 +112,9 @@ test("only allowed keys ever appear on the output, no matter what the input carr
     assert.equal(ALLOWED_TOP_LEVEL_KEYS.includes(key), true, `${key} is not in the allow list`);
   }
 });
+
+test("an own key explicitly set to undefined is omitted rather than throwing", async () => {
+  const { reduceBidRequest } = await load();
+
+  assert.deepEqual(reduceBidRequest({ id: undefined, site: { a: 1 } }), { site: { a: 1 } });
+});

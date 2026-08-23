@@ -20,7 +20,7 @@ export function reduceBidRequest(parsed) {
   const reduced = {};
 
   for (const key of ALLOWED_TOP_LEVEL_KEYS) {
-    if (Object.prototype.hasOwnProperty.call(parsed, key)) {
+    if (Object.prototype.hasOwnProperty.call(parsed, key) && parsed[key] !== undefined) {
       // Deep copy so nothing downstream shares a reference with the full request.
       reduced[key] = JSON.parse(JSON.stringify(parsed[key]));
     }
