@@ -5,6 +5,15 @@ const https = require("https");
 const net = require("net");
 const path = require("path");
 
+const {
+  compareDomains,
+  normalizeHostname,
+  normalizeSellerType,
+  summarize,
+  validateSellerType
+} = require("./lib/validation");
+const { parseAdsTxt, parseAdsTxtLine } = require("./lib/ads-txt");
+
 const app = express();
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = process.env.PORT || 3000;
@@ -289,148 +298,6 @@ function resolveSellersJsonTarget(adSystemDomain) {
   };
 }
 
-function parseAdsTxt(input) {
-  return input
-    .split(/\r?\n/)
-    .map((line, index) => parseAdsTxtLine(line, index + 1))
-    .filter(Boolean);
-}
-
-function parseAdsTxtLine(line, lineNumber) {
-  const commentIndex = line.indexOf("#");
-  const withoutComment = commentIndex >= 0 ? line.slice(0, commentIndex) : line;
-  const trimmed = withoutComment.trim();
-
-  if (!trimmed) {
-    return null;
-  }
-
-  const fields = trimmed.split(",").map((part) => part.trim());
-  if (fields.length < 3) {
-    return null;
-  }
-
-  // An empty ad system domain or account ID cannot identify anything to look up.
-  // An unrecognised relationship is kept: validateSellerType reports it as a
-  // mismatch, which is more useful to a publisher than silently dropping the row.
-  const adSystemDomain = normalizeHostname(fields[0]);
-  const accountId = fields[1];
-  if (!adSystemDomain || !accountId) {
-    return null;
-  }
-
-  return {
-    adSystemDomain,
-    accountId,
-    relationship: fields[2].toUpperCase(),
-    certificationAuthorityId: fields[3] || null,
-    lineNumber,
-    raw: line.trim()
-  };
-}
-
-function validateSellerType(relationship, sellerType) {
-  const expectedTypes = relationship === "DIRECT"
-    ? ["PUBLISHER", "BOTH"]
-    : relationship === "RESELLER"
-      ? ["INTERMEDIARY", "BOTH"]
-      : [];
-
-  if (expectedTypes.includes(sellerType)) {
-    return {
-      status: "valid",
-      statusLabel: "Valid",
-      message: `ads.txt relationship ${relationship} matches sellers.json seller_type ${sellerType}.`
-    };
-  }
-
-  if (!expectedTypes.length) {
-    return {
-      status: "mismatch",
-      statusLabel: "Mismatch",
-      message: `Unsupported ads.txt relationship ${relationship} cannot be validated confidently.`
-    };
-  }
-
-  return {
-    status: "mismatch",
-    statusLabel: "Mismatch",
-    message: `ads.txt relationship ${relationship} does not align with sellers.json seller_type ${sellerType || "UNKNOWN"}.`
-  };
-}
-
-function summarize(records) {
-  return records.reduce(
-    (summary, record) => {
-      summary.total += 1;
-      summary[record.status] += 1;
-
-      if (record.confidential) {
-        summary.confidential += 1;
-      }
-
-      if (record.domainCheck?.status === "match") {
-        summary.domainMatches += 1;
-      }
-
-      if (record.domainCheck?.status === "related") {
-        summary.domainRelated += 1;
-      }
-
-      if (record.domainCheck?.status === "mismatch") {
-        summary.domainMismatches += 1;
-      }
-
-      return summary;
-    },
-    {
-      total: 0,
-      valid: 0,
-      mismatch: 0,
-      not_found: 0,
-      unreachable: 0,
-      confidential: 0,
-      domainMatches: 0,
-      domainRelated: 0,
-      domainMismatches: 0
-    }
-  );
-}
-
-function compareDomains(publisherDomain, sellerDomain) {
-  if (!sellerDomain) {
-    return {
-      status: "unknown",
-      message: "No seller domain provided in sellers.json."
-    };
-  }
-
-  if (publisherDomain === sellerDomain) {
-    return {
-      status: "match",
-      message: `Seller domain ${sellerDomain} matches publisher domain ${publisherDomain}.`,
-      sellerDomain
-    };
-  }
-
-  // A suffix relationship is reported separately rather than as a match. Telling
-  // a registrable domain from a public suffix needs the Public Suffix List, so
-  // tenant.example.io under example.io looks identical here to a real subdomain.
-  if (publisherDomain.endsWith(`.${sellerDomain}`) || sellerDomain.endsWith(`.${publisherDomain}`)) {
-    return {
-      status: "related",
-      message: `Seller domain ${sellerDomain} shares a suffix with publisher domain ${publisherDomain}. A shared suffix alone does not establish common ownership.`,
-      sellerDomain
-    };
-  }
-
-  return {
-    status: "mismatch",
-    message: `Seller domain ${sellerDomain} does not match publisher domain ${publisherDomain}.`,
-    sellerDomain
-  };
-}
-
 async function fetchSellersJson(url) {
   const cached = sellersCache.get(url);
   if (cached) {
@@ -663,19 +530,6 @@ async function validateExternalUrl(rawUrl) {
     hostname,
     addresses: uniqueAddresses
   };
-}
-
-function normalizeHostname(value) {
-  return String(value || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\.+$/, "");
-}
-
-function normalizeSellerType(value) {
-  return String(value || "")
-    .trim()
-    .toUpperCase();
 }
 
 function isLocalHostname(hostname) {
