@@ -89,6 +89,11 @@ test("a request with no schain is rejected with guidance rather than audited", a
 });
 
 test("an app request with no resolvable domain asks for one", async () => {
+  // Stubbed so the unmapped bundle's itunes.apple.com lookup hits the stub's
+  // "unexpected outbound request" throw instead of a live network call. resolveAppDomain
+  // swallows that into the same domain:null result, so the assertions below are unchanged.
+  stubOutbound();
+
   const response = await axios.post(
     `${baseUrl}/api/audit-chain`,
     {
@@ -121,6 +126,24 @@ test("originDomainOverride supplies the missing app domain", async () => {
   assert.equal(response.data.origin.resolvedFrom, "user");
 });
 
+test("origin.domain reports the domain actually audited, not the raw override", async () => {
+  stubOutbound();
+
+  const response = await axios.post(`${baseUrl}/api/audit-chain`, {
+    bidRequest: {
+      app: { bundle: "com.unmapped.app" },
+      source: { ext: { schain: SCHAIN } }
+    },
+    // A stray path segment on the override must not leak into the reported origin —
+    // the URL actually fetched and audited is https://dailynews.example/ignored/app-ads.txt,
+    // whose hostname is dailynews.example, not "dailynews.example/ignored".
+    originDomainOverride: "dailynews.example/ignored"
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.data.origin.domain, "dailynews.example");
+});
+
 test("a missing bidRequest body is a 400", async () => {
   const response = await axios.post(
     `${baseUrl}/api/audit-chain`,
@@ -143,4 +166,34 @@ test("an originDomainOverride pointing at a private address is refused", async (
 
   assert.equal(response.status, 400);
   assert.match(response.data.error, /private|loopback|local/i);
+});
+
+// This is the exact thing the per-route parser ruling turned on: a limit sitting behind
+// a global parser is dead code, because the global one would 413 the request first.
+test("a body over 100kb still reaches /api/audit-chain's route logic", async () => {
+  const padding = "x".repeat(150 * 1024);
+
+  const response = await axios.post(
+    `${baseUrl}/api/audit-chain`,
+    { bidRequest: { site: { domain: "dailynews.example", name: padding } } },
+    { validateStatus: () => true }
+  );
+
+  assert.equal(response.status, 422);
+  assert.equal(response.data.reason, "no_schain");
+});
+
+test("a body over 100kb to /api/validate is rejected with 413, as JSON rather than an HTML stack trace", async () => {
+  const padding = "x".repeat(150 * 1024);
+
+  const response = await axios.post(
+    `${baseUrl}/api/validate`,
+    { adsTxtUrl: "https://example.com/ads.txt", accountId: "acct-1", padding },
+    { validateStatus: () => true }
+  );
+
+  assert.equal(response.status, 413);
+  assert.match(response.headers["content-type"], /application\/json/);
+  assert.equal(typeof response.data.error, "string");
+  assert.ok(!response.data.error.includes("node_modules"));
 });

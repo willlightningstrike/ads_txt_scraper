@@ -308,3 +308,38 @@ test("a hostile schain node.name (non-stringifiable) does not throw and comes ba
   assert.equal(result.nodes.length, 1);
   assert.equal(result.nodes[0].name, null);
 });
+
+test("a schain with more than 32 valid nodes is truncated to 32 with one warning", () => {
+  const nodes = Array.from({ length: 40 }, (_value, index) => ({
+    asi: `exchange-${index}.com`,
+    sid: String(index)
+  }));
+
+  const result = extractBidRequest({
+    site: { domain: "a.example" },
+    source: { ext: { schain: { ver: "1.0", complete: 1, nodes } } }
+  });
+
+  assert.equal(result.nodes.length, 32);
+  assert.equal(result.nodes[0].asi, "exchange-0.com");
+  assert.equal(result.nodes[31].asi, "exchange-31.com");
+
+  const truncationWarnings = result.warnings.filter((w) => w.code === "schain_truncated");
+  assert.equal(truncationWarnings.length, 1);
+  assert.match(truncationWarnings[0].message, /8 schain nodes/);
+});
+
+test("exactly 32 valid nodes is not truncated", () => {
+  const nodes = Array.from({ length: 32 }, (_value, index) => ({
+    asi: `exchange-${index}.com`,
+    sid: String(index)
+  }));
+
+  const result = extractBidRequest({
+    site: { domain: "a.example" },
+    source: { ext: { schain: { ver: "1.0", complete: 1, nodes } } }
+  });
+
+  assert.equal(result.nodes.length, 32);
+  assert.ok(!result.warnings.some((w) => w.code === "schain_truncated"));
+});

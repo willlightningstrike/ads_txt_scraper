@@ -146,6 +146,10 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
 
     const origin = { ...normalized.origin, ...resolved };
     const adsTarget = await validateExternalUrl(`https://${origin.domain}/${origin.file}`);
+    // origin.domain may still carry a raw user-supplied override (e.g. one with a stray
+    // path segment); adsTarget.hostname is what was actually validated and fetched, so
+    // the reported origin must match the file that was actually read, not the raw input.
+    origin.domain = adsTarget.hostname;
     const adsEntries = parseAdsTxt(await fetchText(adsTarget, controller.signal));
 
     const result = await auditChain(
@@ -153,7 +157,8 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
       {
         adsEntries,
         loadSellers: fetchSellersJson,
-        originDomain: adsTarget.hostname
+        originDomain: adsTarget.hostname,
+        signal: controller.signal
       }
     );
 
@@ -175,6 +180,15 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
 
 app.get("*", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+// Express's default error handler serves an HTML page with a full stack trace (visible
+// node_modules paths included) — for example on the 413 express.json() throws for an
+// oversized body. The frontend calls response.json() on error responses, so an HTML body
+// would throw there too. Keep every error path, handled or not, on a plain JSON contract.
+app.use((err, _req, res, _next) => {
+  const statusCode = err.statusCode || err.status || 500;
+  res.status(statusCode).json({ error: err.message || "Request failed." });
 });
 
 if (require.main === module) {

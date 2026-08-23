@@ -321,6 +321,37 @@ test("a sellers.json override domain gets a label matching the URL it actually o
   assert.equal(source.label, "storage.googleapis.com/adx-rtb-dictionaries/sellers.json");
 });
 
+test("an aborted signal stops the walk before starting the next hop", async () => {
+  const controller = new AbortController();
+  let hopsAttempted = 0;
+
+  const result = await auditChain(
+    normalized({ nodes: [
+      NODES[0],
+      { asi: "bigssp.com", sid: "ex-a-7788", name: null, domain: null, hp: 1, rid: null },
+      { asi: "gone.example", sid: "1", name: null, domain: null, hp: 1, rid: null }
+    ] }),
+    {
+      adsEntries: ADS_ENTRIES,
+      originDomain: "dailynews.example",
+      signal: controller.signal,
+      loadSellers: async (url) => {
+        hopsAttempted += 1;
+        // Abort partway through: after hop 0's fetch resolves, the caller has gone away.
+        // Hop 1 must not be started.
+        if (url.includes("exchange-a")) {
+          controller.abort();
+        }
+        return SELLERS[url];
+      }
+    }
+  );
+
+  assert.equal(hopsAttempted, 1, "only the first hop's sellers.json fetch should have started");
+  assert.equal(result.hops.length, 1, "the walk should stop before starting hop 1");
+  assert.equal(result.summary.hops, 1);
+});
+
 test("an empty node list produces an unverifiable result rather than a pass", async () => {
   const result = await auditChain(normalized({ nodes: [], complete: 0 }), {
     adsEntries: ADS_ENTRIES,
