@@ -156,3 +156,96 @@ test("an Apple store URL is not compared to the bundle, because it cannot be", (
 
   assert.equal(result.warnings.some((w) => w.code === "app_bundle_storeurl_mismatch"), false);
 });
+
+test("a non-string site.page never reaches origin.page as an object", () => {
+  const result = extractBidRequest({
+    site: { domain: "a.example", page: { toString: 1 } },
+    source: { ext: { schain: SCHAIN } }
+  });
+
+  assert.equal(result.origin.page, null);
+});
+
+test("a non-object source yields no_schain rather than throwing", () => {
+  const result = extractBidRequest({
+    site: { domain: "dailynews.example" },
+    source: "not-an-object"
+  });
+
+  assert.equal(result.nodes.length, 0);
+  assert.equal(result.schainSource, null);
+  assert.equal(result.complete, null);
+  assert.ok(result.warnings.some((w) => w.code === "no_schain"));
+});
+
+test("a non-object source.ext falls back to source.schain", () => {
+  const result = extractBidRequest({
+    site: { domain: "dailynews.example" },
+    source: { ext: "not-an-object", schain: SCHAIN }
+  });
+
+  assert.equal(result.schainSource, "source.schain");
+  assert.equal(result.nodes.length, 2);
+});
+
+test("a non-array schain.nodes yields no_schain and no nodes", () => {
+  const result = extractBidRequest({
+    site: { domain: "dailynews.example" },
+    source: { schain: { ver: "1.0", complete: 1, nodes: "not-an-array" } }
+  });
+
+  assert.equal(result.nodes.length, 0);
+  assert.equal(result.schainSource, null);
+  assert.ok(result.warnings.some((w) => w.code === "no_schain"));
+});
+
+test("a nodes array containing null and a primitive drops both under one warning", () => {
+  const result = extractBidRequest({
+    site: { domain: "dailynews.example" },
+    source: { schain: { ver: "1.0", complete: 1, nodes: [
+      null,
+      "oops",
+      { asi: "exchange-a.com", sid: "12345" }
+    ] } }
+  });
+
+  assert.equal(result.nodes.length, 1);
+  const invalidNodeWarnings = result.warnings.filter((w) => w.code === "invalid_schain_node");
+  assert.equal(invalidNodeWarnings.length, 1);
+  assert.ok(invalidNodeWarnings[0].message.includes("2 schain nodes"));
+});
+
+test("a site.page that is not a valid URL leaves domain unresolved without throwing", () => {
+  const result = extractBidRequest({
+    site: { page: "not-a-valid-url" },
+    source: { ext: { schain: SCHAIN } }
+  });
+
+  assert.equal(result.origin.domain, null);
+  assert.equal(result.origin.resolvedFrom, null);
+  assert.equal(result.origin.page, "not-a-valid-url");
+});
+
+test("an omitted schain.complete yields null, and an explicit 0 still yields 0", () => {
+  const omitted = extractBidRequest({
+    site: { domain: "dailynews.example" },
+    source: { ext: { schain: { ver: "1.0", nodes: [{ asi: "exchange-a.com", sid: "12345" }] } } }
+  });
+  assert.equal(omitted.complete, null);
+
+  const explicitZero = extractBidRequest({
+    site: { domain: "dailynews.example" },
+    source: { ext: { schain: { ver: "1.0", complete: 0, nodes: [{ asi: "exchange-a.com", sid: "12345" }] } } }
+  });
+  assert.equal(explicitZero.complete, 0);
+});
+
+test("a full URL in site.domain is reduced to its host", () => {
+  const result = extractBidRequest({
+    site: { domain: "https://news.example/" },
+    source: { ext: { schain: SCHAIN } }
+  });
+
+  assert.equal(result.origin.domain, "news.example");
+  assert.equal(result.origin.resolvedFrom, "site.domain");
+});
