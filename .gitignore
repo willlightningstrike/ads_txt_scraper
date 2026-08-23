@@ -16,3 +16,7 @@ logs/
 implementation_plan.md
 bug_report_*.md
 CLAUDE.md
+docs/superpowers/
+
+# Agent scratch: brainstorm mockups, execution ledgers, review packages
+.superpowers/
