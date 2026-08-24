@@ -20,12 +20,15 @@ fileInput.addEventListener("change", async () => {
   // Checked before reading: a multi-hundred-megabyte file would otherwise be read into
   // memory and parsed before anyone could tell the user it was too big.
   if (file.size > MAX_UPLOAD_BYTES) {
-    setMessage(`That file is ${Math.round(file.size / 1024 / 1024)} MB. The limit is 5 MB.`, "error");
+    setMessage(`That file is ${(file.size / 1024 / 1024).toFixed(1)} MB. The limit is 5 MB.`, "error");
     fileInput.value = "";
     return;
   }
 
   input.value = await file.text();
+  // Cleared on the success path too, not just the oversize path: without this, re-picking
+  // the same filename (e.g. after editing it on disk) fires no "change" event at all.
+  fileInput.value = "";
   refreshExtract();
 });
 
@@ -36,13 +39,15 @@ input.addEventListener("dragover", (event) => {
 });
 
 input.addEventListener("drop", async (event) => {
-  event.preventDefault();
   const file = event.dataTransfer?.files?.[0];
   if (!file) {
+    // No file on this drop (e.g. a plain text drag) — leave the event alone so the
+    // browser's native "insert dropped text" behavior still runs.
     return;
   }
+  event.preventDefault();
   if (file.size > MAX_UPLOAD_BYTES) {
-    setMessage(`That file is ${Math.round(file.size / 1024 / 1024)} MB. The limit is 5 MB.`, "error");
+    setMessage(`That file is ${(file.size / 1024 / 1024).toFixed(1)} MB. The limit is 5 MB.`, "error");
     return;
   }
   input.value = await file.text();
@@ -84,7 +89,12 @@ function refreshExtract() {
 function renderExtractCard(reduced) {
   const site = reduced.site || {};
   const app = reduced.app || {};
-  const nodes = reduced.source?.ext?.schain?.nodes || reduced.source?.schain?.nodes || [];
+  // reduceBidRequest deep-copies `source` wholesale and never validates its shape, so a
+  // pasted request can make `nodes` anything — including an object with its own `length`
+  // property. Coercing to an array at the source (not just at the render call site) means
+  // every reader of `nodes` downstream gets a real array, and `.length` is always numeric.
+  const rawNodes = reduced.source?.ext?.schain?.nodes ?? reduced.source?.schain?.nodes;
+  const nodes = Array.isArray(rawNodes) ? rawNodes : [];
   const isApp = Boolean(reduced.app);
   const domain = isApp ? app.domain : site.domain || hostOf(site.page);
   const needsInput = !domain;
@@ -117,19 +127,26 @@ function renderExtractCard(reduced) {
 
 function originPrompt(isApp, storeurl) {
   const file = isApp ? "app-ads.txt" : "ads.txt";
+  const label = isApp ? "Developer domain" : "Publisher domain";
+  // Site requests have no store listing and no "developer" — only app requests do, so the
+  // explanation and the store link must both be conditioned on origin kind, not just the
+  // file name.
+  const explanation = isApp
+    ? "is hosted on the developer's site from the store listing"
+    : "is hosted on the publisher's own domain";
   // The store listing is literally where the developer domain is published, so linking
   // it answers "how am I supposed to know this?" rather than just demanding an answer.
-  const storeLink = storeurl ? linkTo(storeurl, "Open the store listing") : "";
+  const storeLink = isApp && storeurl ? linkTo(storeurl, "Open the store listing") : "";
 
   return `
     <div class="extract-card__prompt">
       <label class="field">
-        <span>Developer domain</span>
+        <span>${label}</span>
         <input id="ortb-origin-domain" type="text" placeholder="example.com" autocomplete="off" />
       </label>
       <p class="extract-card__hint">
-        Not in the bid request. ${escapeHtml(file)} is hosted on the developer's site from the store
-        listing. Enter the domain and we will fetch <code>https://&lt;domain&gt;/${escapeHtml(file)}</code>.
+        Not in the bid request. ${escapeHtml(file)} ${explanation}.
+        Enter the domain and we will fetch <code>https://&lt;domain&gt;/${escapeHtml(file)}</code>.
         ${storeLink}
       </p>
     </div>
