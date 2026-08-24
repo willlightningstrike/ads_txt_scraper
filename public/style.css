@@ -128,6 +128,9 @@ body::before {
 }
 
 .panel {
+  /* Grid items default to min-width:auto, so an unbreakable string inside a panel
+     (a store URL, a long bundle) can push the panel past its grid track. */
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 28px;
   background: var(--panel);
@@ -532,7 +535,7 @@ button:disabled {
 
 .extract-card__rows {
   display: grid;
-  grid-template-columns: 130px 1fr;
+  grid-template-columns: 130px minmax(0, 1fr);
   gap: 6px 12px;
   margin: 10px 0 0;
   font-size: 0.9rem;
@@ -544,6 +547,10 @@ button:disabled {
 
 .extract-card__rows dd {
   margin: 0;
+  /* Store URLs and bundle IDs have no break opportunities; without this the cell's
+     min-content width is the whole string and it stretches the panel. */
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .extract-card__prompt {
@@ -551,6 +558,7 @@ button:disabled {
 }
 
 .extract-card__hint {
+  overflow-wrap: anywhere;
   font-size: 0.82rem;
   color: var(--muted);
   margin-top: 6px;
