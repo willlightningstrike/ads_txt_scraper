@@ -80,3 +80,62 @@ test("a bundle-less app origin does no lookup", async () => {
 
   assert.deepEqual(result, { domain: null, resolvedFrom: null });
 });
+
+// --- Apple lookup keying (bug found 2026-08-23 from a real Paramount+ bid request) ---
+// Apple keys numeric App Store IDs as `id` and reverse-DNS identifiers as `bundleId`.
+// Exchanges routinely put the numeric track ID in app.bundle for iOS and CTV.
+
+const { buildItunesLookupUrl, appleTrackId } = require("../lib/app-domain");
+
+test("a numeric app.bundle is looked up by id, not bundleId", () => {
+  const url = buildItunesLookupUrl("530168168");
+  assert.match(url, /[?&]id=530168168/);
+  assert.equal(/bundleId=/.test(url), false);
+});
+
+test("a reverse-DNS app.bundle is still looked up by bundleId", () => {
+  const url = buildItunesLookupUrl("tv.pluto.ios");
+  assert.match(url, /[?&]bundleId=tv\.pluto\.ios/);
+});
+
+test("a numeric bundle reaches the lookup and resolves", async () => {
+  const seen = [];
+  const result = await resolveAppDomain(
+    { kind: "app", domain: null, bundle: "530168168", storeurl: "https://apps.apple.com/us/app/paramount/id530168168" },
+    { lookupItunes: async (identifier) => { seen.push(identifier); return "https://www.paramountplus.com/"; } }
+  );
+
+  assert.deepEqual(result, { domain: "www.paramountplus.com", resolvedFrom: "itunes" });
+  assert.deepEqual(seen, ["530168168"]);
+});
+
+test("the Apple store URL supplies the track id when app.bundle is absent", async () => {
+  const seen = [];
+  const result = await resolveAppDomain(
+    { kind: "app", domain: null, bundle: null, storeurl: "https://apps.apple.com/us/app/paramount/id530168168" },
+    { lookupItunes: async (identifier) => { seen.push(identifier); return "https://www.paramountplus.com/"; } }
+  );
+
+  assert.equal(result.domain, "www.paramountplus.com");
+  assert.deepEqual(seen, ["530168168"]);
+});
+
+test("the store URL is tried after a bundle Apple does not know", async () => {
+  const seen = [];
+  const result = await resolveAppDomain(
+    { kind: "app", domain: null, bundle: "com.unknown.app", storeurl: "https://apps.apple.com/us/app/paramount/id530168168" },
+    { lookupItunes: async (identifier) => { seen.push(identifier); return identifier === "530168168" ? "https://www.paramountplus.com/" : null; } }
+  );
+
+  assert.equal(result.domain, "www.paramountplus.com");
+  assert.deepEqual(seen, ["com.unknown.app", "530168168"]);
+});
+
+test("appleTrackId ignores a non-Apple store URL", () => {
+  assert.equal(appleTrackId("https://play.google.com/store/apps/details?id=com.a.b"), null);
+});
+
+test("appleTrackId does not trust a lookalike Apple host", () => {
+  assert.equal(appleTrackId("https://notapps.apple.com/us/app/x/id530168168"), null);
+  assert.equal(appleTrackId("https://apps.apple.com.evil.test/us/app/x/id530168168"), null);
+});
