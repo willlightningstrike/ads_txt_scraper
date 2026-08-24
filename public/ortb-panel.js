@@ -1,15 +1,20 @@
 import { reduceBidRequest } from "/bid-request-extract.js";
-import { escapeHtml } from "/app.js";
+import { escapeHtml, setLatestPayload, setLoading } from "/app.js";
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+
+// Server-side, the walk is bounded by AUDIT_BUDGET_MS (120s by default) instead of the
+// old unbounded per-hop timeout math. This mirrors CLIENT_TIMEOUT_MS in app.js but sized
+// for that longer server-side budget plus margin for network latency, so a legitimate
+// full-length audit isn't cut off client-side before the server's own deadline fires.
+const CLIENT_TIMEOUT_MS = 130_000;
 
 const form = document.getElementById("ortb-form");
 const input = document.getElementById("ortb-input");
 const fileInput = document.getElementById("ortb-file");
 const extractCard = document.getElementById("ortb-extract");
 const message = document.getElementById("ortb-message");
-
-let pendingOverride = "";
+const submitButton = document.getElementById("ortb-submit");
 
 fileInput.addEventListener("change", async () => {
   const file = fileInput.files && fileInput.files[0];
@@ -96,46 +101,73 @@ function schainNodes(reduced) {
   return Array.isArray(rawNodes) ? rawNodes : [];
 }
 
+// Mirrors lib/ortb.js's extractOrigin precedence (site, then app, then dooh) so the
+// card's inventory label always matches what the server actually resolves the origin
+// as. Falls back to "site" when none of the three are present, matching the previous
+// behaviour for that case.
+function inventoryKind(reduced) {
+  if (reduced.site && typeof reduced.site === "object") {
+    return "site";
+  }
+  if (reduced.app && typeof reduced.app === "object") {
+    return "app";
+  }
+  if (reduced.dooh && typeof reduced.dooh === "object") {
+    return "dooh";
+  }
+  return "site";
+}
+
 function renderExtractCard(reduced) {
   const site = reduced.site || {};
   const app = reduced.app || {};
+  const dooh = reduced.dooh || {};
   const nodes = schainNodes(reduced);
-  const isApp = Boolean(reduced.app);
-  const domain = isApp ? app.domain : site.domain || hostOf(site.page);
+  const kind = inventoryKind(reduced);
+  const domain = kind === "app"
+    ? app.domain
+    : kind === "dooh"
+      ? dooh.domain
+      : site.domain || hostOf(site.page);
   const needsInput = !domain;
+  const file = kind === "app" ? "app-ads.txt" : "ads.txt";
+  const inventoryLabel = kind === "app" ? "App" : kind === "dooh" ? "DOOH" : "Site";
 
   extractCard.hidden = false;
   extractCard.innerHTML = `
     <details class="extract-card__details" ${needsInput ? "open" : ""}>
       <summary>Extracted from this request${needsInput ? " — 1 needs input" : ""}</summary>
       <dl class="extract-card__rows">
-        <dt>Inventory</dt><dd>${escapeHtml(isApp ? "App" : "Site")}</dd>
-        ${isApp
+        <dt>Inventory</dt><dd>${escapeHtml(inventoryLabel)}</dd>
+        ${kind === "app"
           ? `<dt>Bundle</dt><dd>${escapeHtml(app.bundle || "—")}</dd>
              <dt>Store URL</dt><dd>${escapeHtml(app.storeurl || "—")}</dd>`
           : `<dt>Domain</dt><dd>${escapeHtml(domain || "—")}</dd>`}
         <dt>Supply chain</dt><dd>${nodes.length} node${nodes.length === 1 ? "" : "s"}</dd>
       </dl>
-      ${needsInput ? originPrompt(isApp, app.storeurl) : ""}
+      ${needsInput ? originPrompt(kind, file, app.storeurl) : ""}
     </details>
   `;
 
   const overrideField = document.getElementById("ortb-origin-domain");
-  if (overrideField) {
+  const target = document.getElementById("ortb-resolved-target");
+  if (overrideField && target) {
     overrideField.addEventListener("input", () => {
-      pendingOverride = overrideField.value.trim();
+      updateResolvedTarget(overrideField.value.trim(), file, target);
     });
-  } else {
-    pendingOverride = "";
   }
 }
 
-function originPrompt(isApp, storeurl) {
-  const file = isApp ? "app-ads.txt" : "ads.txt";
+function updateResolvedTarget(domainValue, file, target) {
+  target.textContent = `https://${domainValue || "<domain>"}/${file}`;
+}
+
+function originPrompt(kind, file, storeurl) {
+  const isApp = kind === "app";
   const label = isApp ? "Developer domain" : "Publisher domain";
-  // Site requests have no store listing and no "developer" — only app requests do, so the
-  // explanation and the store link must both be conditioned on origin kind, not just the
-  // file name.
+  // Site and DOOH requests have no store listing and no "developer" — only app requests
+  // do, so the explanation and the store link must both be conditioned on origin kind,
+  // not just the file name (DOOH shares site's file, "ads.txt").
   const explanation = isApp
     ? "is hosted on the developer's site from the store listing"
     : "is hosted on the publisher's own domain";
@@ -146,12 +178,12 @@ function originPrompt(isApp, storeurl) {
   return `
     <div class="extract-card__prompt">
       <label class="field">
-        <span>${label}</span>
+        <span>${escapeHtml(label)}</span>
         <input id="ortb-origin-domain" type="text" placeholder="example.com" autocomplete="off" />
       </label>
       <p class="extract-card__hint">
-        Not in the bid request. ${escapeHtml(file)} ${explanation}.
-        Enter the domain and we will fetch <code>https://&lt;domain&gt;/${escapeHtml(file)}</code>.
+        Not in the bid request. ${escapeHtml(file)} ${escapeHtml(explanation)}.
+        Enter the domain and we will fetch <code id="ortb-resolved-target">https://&lt;domain&gt;/${escapeHtml(file)}</code>.
         ${storeLink}
       </p>
     </div>
@@ -190,8 +222,11 @@ function setMessage(text, tone = "neutral") {
   message.dataset.tone = tone;
 }
 
+// Reads straight from the DOM rather than caching the typed value: renderExtractCard
+// rebuilds the card's innerHTML (and this field along with it) on every keystroke in the
+// JSON textarea, so a cached value could silently outlive the field that produced it.
 function getOverride() {
-  return pendingOverride;
+  return document.getElementById("ortb-origin-domain")?.value.trim() ?? "";
 }
 
 const resultsPanel = document.getElementById("results");
@@ -228,6 +263,14 @@ form.addEventListener("submit", async (event) => {
   }
 
   setMessage("Auditing...");
+  setLoading(true);
+  submitButton.disabled = true;
+
+  // Backstops the wall-clock cap the server now enforces on the walk itself
+  // (AUDIT_BUDGET_MS). Without this, a hung connection could leave the panel stuck on
+  // "Auditing..." indefinitely with no way to submit again.
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), CLIENT_TIMEOUT_MS);
 
   try {
     const response = await fetch("/api/audit-chain", {
@@ -236,7 +279,8 @@ form.addEventListener("submit", async (event) => {
       body: JSON.stringify({
         bidRequest: reduced,
         ...(getOverride() ? { originDomainOverride: getOverride() } : {})
-      })
+      }),
+      signal: controller.signal
     });
 
     const payload = await response.json();
@@ -257,11 +301,30 @@ form.addEventListener("submit", async (event) => {
     renderChainResults(payload);
     setMessage("Audit complete.", "success");
   } catch (error) {
-    setMessage(error.message || "Audit failed.", "error");
+    if (error.name === "AbortError") {
+      setMessage(`No response after ${Math.round(CLIENT_TIMEOUT_MS / 1000)} seconds. The server may be unreachable.`, "error");
+    } else {
+      setMessage(error.message || "Audit failed.", "error");
+    }
+  } finally {
+    clearTimeout(deadline);
+    submitButton.disabled = false;
+    setLoading(false);
+    // setLoading(true) above hid both the results panel and the empty state. On success
+    // renderChainResults unhides the results panel; on any failure path neither was ever
+    // unhidden, which would otherwise leave the panel blank instead of back at rest.
+    if (resultsPanel.hidden) {
+      emptyState.hidden = false;
+    }
   }
 });
 
 function renderChainResults(payload) {
+  // This results surface is shared with the ads.txt form. Its "Copy JSON" button and
+  // latestPayload are owned by app.js and would otherwise still point at whatever the
+  // ads.txt form last produced, exporting a payload that doesn't match what's on screen.
+  setLatestPayload(null);
+
   emptyState.hidden = true;
   resultsPanel.hidden = false;
 
@@ -277,11 +340,18 @@ function renderChainResults(payload) {
     </div>
   `).join("");
 
+  // verdict "broken" with firstFailedHop null means no hop itself failed — a chain-level
+  // check did (e.g. complete_flag_contradicted). The generic "could not be fully
+  // verified" copy reads as an unverifiable/soft outcome, which contradicts a verdict
+  // that a chain-level check earned FAIL on. Surface that check's own message instead.
+  const firstFailedChainCheck = payload.chainChecks.find((check) => check.status === "fail");
   const banner = payload.verdict === "pass"
     ? "Chain verified end to end"
     : payload.firstFailedHop !== null
       ? `Chain broken at hop ${payload.firstFailedHop + 1} of ${payload.summary.hops}`
-      : "Chain could not be fully verified";
+      : payload.verdict === "broken" && firstFailedChainCheck
+        ? firstFailedChainCheck.message
+        : "Chain could not be fully verified";
 
   resultsMeta.innerHTML = `
     <p class="chain-verdict chain-verdict--${escapeHtml(payload.verdict)}">${escapeHtml(banner)}</p>

@@ -116,7 +116,7 @@ If the seller ID does not appear anywhere in the `ads.txt` file, the report says
 npm test
 ```
 
-The suite covers the SSRF/URL-validation layer (private IP detection, IPv6 handling, DNS pinning). There is no end-to-end test — manual testing is done by running the server and using the UI.
+The suite runs on Node's built-in `node --test` runner and currently has 104 tests across nine files, covering the SSRF/URL-validation layer (private IP detection, IPv6 handling, DNS pinning), ads.txt and sellers.json parsing, the `sellers.json` LRU/TTL cache, OpenRTB bid-request extraction and supply-chain auditing, app-developer-domain resolution, and route-level tests for both `POST /api/validate` and `POST /api/audit-chain`.
 
 ## Configuration
 
@@ -131,6 +131,7 @@ All settings are optional environment variables:
 | `MAX_CACHEABLE_JSON_BYTES` | `10485760` (10 MiB) | Max `sellers.json` size eligible for caching |
 | `SELLERS_CACHE_SIZE` | `10` | Number of `sellers.json` files held in the LRU cache |
 | `MAX_CONCURRENT_LOOKUPS` | `6` | Max `sellers.json` fetches in flight for one validation |
+| `AUDIT_BUDGET_MS` | `120000` (120 s) | Wall-clock cap on a single `/api/audit-chain` walk |
 
 Example:
 
@@ -198,11 +199,21 @@ All user-supplied strings are HTML-escaped before being inserted into the page.
 ## Project structure
 
 ```
-server.js              Express server, fetching, parsing, validation, SSRF guards
-public/index.html      UI markup
-public/app.js          Form handling and result rendering (vanilla JS, no build step)
-public/style.css       Styles
-test/server.test.js    Tests for the URL-validation layer
+server.js                          Express routes: /api/validate, /api/audit-chain, wiring for lib/
+lib/validation.js                  Domain comparison, seller-type validation, summary tallies
+lib/ads-txt.js                     ads.txt parsing
+lib/http-client.js                 SSRF-safe outbound fetch: URL validation, DNS pinning, redirects
+lib/sellers-json.js                sellers.json fetch + in-memory LRU/TTL cache
+lib/ortb.js                        Bid-request origin/schain extraction (site/app/dooh)
+lib/app-domain.js                  App developer-domain resolution (store listing, overrides)
+lib/chain-audit.js                 Per-hop and whole-chain supply-chain audit logic
+public/index.html                  UI markup
+public/app.js                      ads.txt form handling and result rendering (vanilla JS, no build step)
+public/ortb-panel.js               Bid-request paste/upload panel and chain-audit result rendering
+public/bid-request-extract.js      Client-side reduction of a pasted bid request to allowed fields
+public/style.css                   Styles
+test/                              104 tests across nine files (node --test) covering every lib/ module
+                                    plus route-level tests for /api/validate and /api/audit-chain
 ```
 
 ## License

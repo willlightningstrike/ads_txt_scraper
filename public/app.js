@@ -235,7 +235,12 @@ function showEmptyState() {
   recordsList.innerHTML = "";
 }
 
-function setLoading(isLoading) {
+export function setLatestPayload(value) {
+  latestPayload = value;
+  copyJsonButton.hidden = value === null;
+}
+
+export function setLoading(isLoading) {
   submitButton.disabled = isLoading;
   cancelButton.hidden = !isLoading;
   loadingState.hidden = !isLoading;

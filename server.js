@@ -8,7 +8,7 @@ const {
   summarize,
   validateSellerType
 } = require("./lib/validation");
-const { parseAdsTxt, parseAdsTxtLine } = require("./lib/ads-txt");
+const { parseAdsTxt } = require("./lib/ads-txt");
 const {
   buildAxiosOptions,
   createPinnedLookup,
@@ -27,6 +27,11 @@ const app = express();
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = process.env.PORT || 3000;
 const MAX_CONCURRENT_LOOKUPS = Number(process.env.MAX_CONCURRENT_LOOKUPS || 6);
+// MAX_SCHAIN_NODES bounds the walk's node COUNT, not its DURATION: the walk is
+// sequential and each hop can spend up to REQUEST_TIMEOUT_MS per redirect hop (up to 5
+// requests per hop), so worst case without this is far larger than any single
+// REQUEST_TIMEOUT_MS. This caps the whole /api/audit-chain walk's wall-clock time.
+const AUDIT_BUDGET_MS = Number(process.env.AUDIT_BUDGET_MS || 120_000);
 
 // No CORS middleware: the frontend is served from this same origin, so allowing
 // other origins would only let arbitrary pages drive this server's outbound fetches.
@@ -158,7 +163,10 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
         adsEntries,
         loadSellers: fetchSellersJson,
         originDomain: adsTarget.hostname,
-        signal: controller.signal
+        // Combined so either the client disconnecting or the audit simply taking too
+        // long stops the walk between hops; auditChain already checks signal?.aborted
+        // there and returns whatever partial result it has so far.
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(AUDIT_BUDGET_MS)])
       }
     );
 
