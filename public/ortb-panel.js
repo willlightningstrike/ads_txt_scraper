@@ -264,6 +264,7 @@ form.addEventListener("submit", async (event) => {
 
   setMessage("Auditing...");
   setLoading(true);
+  setLatestPayload(null);
   submitButton.disabled = true;
 
   // Backstops the wall-clock cap the server now enforces on the walk itself
@@ -340,16 +341,20 @@ function renderChainResults(payload) {
     </div>
   `).join("");
 
-  // verdict "broken" with firstFailedHop null means no hop itself failed — a chain-level
-  // check did (e.g. complete_flag_contradicted). The generic "could not be fully
-  // verified" copy reads as an unverifiable/soft outcome, which contradicts a verdict
-  // that a chain-level check earned FAIL on. Surface that check's own message instead.
+  // A non-pass verdict with firstFailedHop null means no WALKED hop itself failed — a
+  // chain-level check did instead (e.g. complete_flag_contradicted, or the server's own
+  // audit_budget_exceeded truncation guard). That covers both verdict "broken" (a
+  // chain-level check earned FAIL outright) and "unverifiable" (the truncation guard
+  // downgrades to this precisely because the unwalked hops are genuinely not-knowable,
+  // not because anything walked was found broken). Either way the generic "could not be
+  // fully verified" copy would bury the actual finding, so surface the failing check's
+  // own message instead of gating this on a specific verdict string.
   const firstFailedChainCheck = payload.chainChecks.find((check) => check.status === "fail");
   const banner = payload.verdict === "pass"
     ? "Chain verified end to end"
     : payload.firstFailedHop !== null
       ? `Chain broken at hop ${payload.firstFailedHop + 1} of ${payload.summary.hops}`
-      : payload.verdict === "broken" && firstFailedChainCheck
+      : firstFailedChainCheck
         ? firstFailedChainCheck.message
         : "Chain could not be fully verified";
 

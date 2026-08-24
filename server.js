@@ -174,6 +174,19 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
       return;
     }
 
+    // The signal passed to auditChain is a union of controller.signal (checked above)
+    // and an AUDIT_BUDGET_MS timeout that is NOT controller.signal, so a budget-expired
+    // walk sails past that check and would otherwise be serialized as a normal, complete
+    // result — including "pass" when nothing beyond the walked prefix was ever checked.
+    if (result.summary.hops < normalized.nodes.length) {
+      result.verdict = "unverifiable";
+      result.chainChecks.push({
+        code: "audit_budget_exceeded",
+        status: "fail",
+        message: `The audit stopped after ${result.summary.hops} of ${normalized.nodes.length} hops because it exceeded its time budget. The remaining hops were not checked.`
+      });
+    }
+
     return res.json({ origin, warnings: normalized.warnings, ...result });
   } catch (error) {
     if (controller.signal.aborted) {
