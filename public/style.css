@@ -553,3 +553,189 @@ button:disabled {
 .source-link--dead {
   color: var(--muted);
 }
+
+.chain-verdict {
+  font-weight: 600;
+  padding: 10px 12px;
+  border-radius: 8px;
+}
+
+.chain-verdict--pass {
+  color: #d6fff0;
+  background: rgba(41, 211, 145, 0.16);
+}
+
+.chain-verdict--broken {
+  color: #ffd2d2;
+  background: rgba(255, 109, 109, 0.14);
+}
+
+.chain-verdict--unverifiable {
+  color: #ffe7c6;
+  background: rgba(247, 176, 74, 0.14);
+}
+
+.chain-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 10px 0;
+  font-size: 0.85rem;
+}
+
+/* A chainChecks entry is a "fail" or a "warn" — a warn is a surfaced observation that
+   deliberately does not change the chain verdict, so it must never read like an error. */
+.chain-check {
+  margin: 6px 0 0;
+  font-size: 0.85rem;
+}
+
+.chain-check--fail {
+  color: var(--danger);
+}
+
+.chain-check--warn {
+  color: var(--warn);
+}
+
+.chain-flow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  padding: 8px 0 16px;
+}
+
+.chain-node {
+  flex: 0 0 auto;
+  min-width: 116px;
+  text-align: center;
+  padding: 10px 8px;
+  border: 2px solid currentColor;
+  border-radius: 8px;
+  display: grid;
+  gap: 2px;
+}
+
+/* Three-way hop verdict: unverifiable is not a soft failure, it means the hop could not
+   be checked at all (confidential seller, unreachable sellers.json), so it gets its own
+   color rather than being folded into pass or broken. */
+.chain-node--pass {
+  color: var(--valid);
+}
+
+.chain-node--broken {
+  color: var(--danger);
+}
+
+.chain-node--unverifiable {
+  color: var(--warn);
+}
+
+.chain-node--origin {
+  border-style: dashed;
+  color: var(--info);
+}
+
+.chain-node__hop {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.chain-node__domain {
+  font-weight: 700;
+  font-size: 0.8rem;
+  word-break: break-all;
+}
+
+.chain-node__sid {
+  font-size: 0.7rem;
+  opacity: 0.8;
+}
+
+.chain-arrow {
+  color: var(--neutral);
+}
+
+.chain-arrow--broken {
+  color: var(--danger);
+}
+
+.chain-arrow--unverifiable {
+  color: var(--warn);
+}
+
+.chain-detail {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin-bottom: 12px;
+}
+
+.chain-detail--broken {
+  border-color: rgba(255, 109, 109, 0.4);
+}
+
+.chain-detail--unverifiable {
+  border-color: rgba(247, 176, 74, 0.4);
+}
+
+.chain-detail__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+}
+
+.badge--pass {
+  color: #d6fff0;
+  background: rgba(41, 211, 145, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(41, 211, 145, 0.35);
+}
+
+.badge--broken {
+  color: #ffd2d2;
+  background: rgba(255, 109, 109, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(255, 109, 109, 0.3);
+}
+
+.badge--unverifiable {
+  color: #ffe7c6;
+  background: rgba(247, 176, 74, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(247, 176, 74, 0.32);
+}
+
+.chain-detail__check {
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.chain-detail__check p {
+  margin: 3px 0 0;
+  font-size: 0.85rem;
+  opacity: 0.8;
+}
+
+.chain-detail__check--fail strong {
+  color: var(--danger);
+}
+
+.chain-detail__check-sources {
+  margin: 6px 0 0;
+  font-size: 0.8rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.chain-detail__raw {
+  margin: 0 14px 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  overflow-x: auto;
+  background: rgba(127, 127, 127, 0.12);
+  color: var(--muted);
+}

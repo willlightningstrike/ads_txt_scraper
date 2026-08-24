@@ -86,15 +86,20 @@ function refreshExtract() {
   renderExtractCard(reduced);
 }
 
+// reduceBidRequest deep-copies `source` wholesale and never validates its shape, so a
+// pasted request can make `nodes` anything — including an object with its own `length`
+// property. Coercing to an array here means every reader of `nodes` downstream gets a
+// real array, and `.length` is always numeric. This is the one place that reaches into
+// `reduced.source` for the chain nodes — every other caller goes through this helper.
+function schainNodes(reduced) {
+  const rawNodes = reduced.source?.ext?.schain?.nodes ?? reduced.source?.schain?.nodes;
+  return Array.isArray(rawNodes) ? rawNodes : [];
+}
+
 function renderExtractCard(reduced) {
   const site = reduced.site || {};
   const app = reduced.app || {};
-  // reduceBidRequest deep-copies `source` wholesale and never validates its shape, so a
-  // pasted request can make `nodes` anything — including an object with its own `length`
-  // property. Coercing to an array at the source (not just at the render call site) means
-  // every reader of `nodes` downstream gets a real array, and `.length` is always numeric.
-  const rawNodes = reduced.source?.ext?.schain?.nodes ?? reduced.source?.schain?.nodes;
-  const nodes = Array.isArray(rawNodes) ? rawNodes : [];
+  const nodes = schainNodes(reduced);
   const isApp = Boolean(reduced.app);
   const domain = isApp ? app.domain : site.domain || hostOf(site.page);
   const needsInput = !domain;
@@ -187,4 +192,161 @@ function setMessage(text, tone = "neutral") {
 
 function getOverride() {
   return pendingOverride;
+}
+
+const resultsPanel = document.getElementById("results");
+const emptyState = document.getElementById("empty-state");
+const summaryGrid = document.getElementById("summary-grid");
+const resultsMeta = document.getElementById("results-meta");
+const recordsList = document.getElementById("records-list");
+const adsTxtUrlField = document.getElementById("adsTxtUrl");
+
+function goToAdsTxtForm(text) {
+  setMessage(text, "error");
+  adsTxtUrlField.focus();
+  adsTxtUrlField.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  const reduced = parseCurrent();
+  if (!reduced || reduced === "invalid") {
+    setMessage("Paste or upload a bid request first.", "error");
+    return;
+  }
+
+  // Mirrors the server's own no_schain check (POST /api/audit-chain returns 422 with
+  // reason: "no_schain" for the same condition) so an empty chain is caught before a
+  // round trip. Goes through the same schainNodes(reduced) helper renderExtractCard
+  // uses — the array coercion there is what keeps a hostile `nodes` shape from reaching
+  // an innerHTML sink, and that guard has to hold everywhere `reduced` is read, not just
+  // in the one place it was first fixed.
+  if (schainNodes(reduced).length === 0) {
+    goToAdsTxtForm("This bid request declares no supply chain, so there is nothing to audit. Enter an ads.txt URL and account ID instead.");
+    return;
+  }
+
+  setMessage("Auditing...");
+
+  try {
+    const response = await fetch("/api/audit-chain", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        bidRequest: reduced,
+        ...(getOverride() ? { originDomainOverride: getOverride() } : {})
+      })
+    });
+
+    const payload = await response.json();
+
+    // A request with no schain has nothing to audit, so hand the user to the existing
+    // two-field form rather than leaving them at a dead end. That form takes a full URL
+    // and an account ID, which is exactly what this case needs.
+    if (payload.reason === "no_schain") {
+      goToAdsTxtForm(payload.error);
+      return;
+    }
+
+    if (!response.ok) {
+      setMessage(payload.error || "Audit failed.", "error");
+      return;
+    }
+
+    renderChainResults(payload);
+    setMessage("Audit complete.", "success");
+  } catch (error) {
+    setMessage(error.message || "Audit failed.", "error");
+  }
+});
+
+function renderChainResults(payload) {
+  emptyState.hidden = true;
+  resultsPanel.hidden = false;
+
+  summaryGrid.innerHTML = [
+    ["Hops", payload.summary.hops],
+    ["Valid", payload.summary.pass],
+    ["Broken", payload.summary.broken],
+    ["Unverifiable", payload.summary.unverifiable]
+  ].map(([label, value]) => `
+    <div class="summary-card">
+      <span class="summary-card__value">${escapeHtml(String(value))}</span>
+      <span class="summary-card__label">${escapeHtml(label)}</span>
+    </div>
+  `).join("");
+
+  const banner = payload.verdict === "pass"
+    ? "Chain verified end to end"
+    : payload.firstFailedHop !== null
+      ? `Chain broken at hop ${payload.firstFailedHop + 1} of ${payload.summary.hops}`
+      : "Chain could not be fully verified";
+
+  resultsMeta.innerHTML = `
+    <p class="chain-verdict chain-verdict--${escapeHtml(payload.verdict)}">${escapeHtml(banner)}</p>
+    <div class="chain-sources">
+      <span class="label">Sources</span>
+      ${payload.sources.map((source) => linkTo(source.url, source.label)).join(" ")}
+    </div>
+    ${payload.chainChecks.map((check) => `
+      <p class="chain-check chain-check--${escapeHtml(check.status)}">${escapeHtml(check.message)}</p>
+    `).join("")}
+  `;
+
+  recordsList.innerHTML = `
+    <div class="chain-flow">
+      <div class="chain-node chain-node--origin">
+        <span class="chain-node__hop">origin</span>
+        <span class="chain-node__domain">${escapeHtml(payload.origin.domain)}</span>
+      </div>
+      ${payload.hops.map((hop) => `
+        <span class="chain-arrow chain-arrow--${escapeHtml(hop.verdict)}">&rarr;</span>
+        <div class="chain-node chain-node--${escapeHtml(hop.verdict)}">
+          <span class="chain-node__hop">hop ${hop.index + 1}</span>
+          <span class="chain-node__domain">${escapeHtml(hop.asi)}</span>
+          <span class="chain-node__sid">${escapeHtml(hop.sid)}</span>
+        </div>
+      `).join("")}
+    </div>
+    ${payload.hops.map((hop) => renderHopDetail(hop, payload)).join("")}
+  `;
+}
+
+function renderHopDetail(hop, payload) {
+  const adsTxtUrl = payload.sources.find((source) => source.kind === "ads-txt");
+  const previous = payload.hops[hop.index - 1];
+
+  // Each check links to the file that produced it. The chain link check links to both
+  // files being compared, because "compare these two" is the actual instruction.
+  const checks = [
+    ["sellersJsonReachable", "sellers.json reachable", [[hop.sellerJsonUrl, `${hop.asi}/sellers.json`]]],
+    ["sellerIdPresent", "Seller ID present", [[hop.sellerJsonUrl, `${hop.asi}/sellers.json`]]],
+    ["sellerTypeValid", "Seller type valid", [[hop.sellerJsonUrl, `${hop.asi}/sellers.json`]]],
+    ["chainLink", "Chain link to previous hop", previous
+      ? [[hop.sellerJsonUrl, `${hop.asi}/sellers.json`], [previous.sellerJsonUrl, `${previous.asi}/sellers.json`]]
+      : []],
+    ["adsTxtDeclared", "Declared in ads.txt", adsTxtUrl ? [[adsTxtUrl.url, adsTxtUrl.label]] : []],
+    ["sellerDomainAlignment", "Seller domain alignment", [[hop.sellerJsonUrl, `${hop.asi}/sellers.json`]]]
+  ];
+
+  return `
+    <article class="chain-detail chain-detail--${escapeHtml(hop.verdict)}">
+      <header class="chain-detail__head">
+        <span>hop ${hop.index + 1} &middot; ${escapeHtml(hop.asi)} &middot; sid ${escapeHtml(hop.sid)}</span>
+        <span class="badge badge--${escapeHtml(hop.verdict)}">${escapeHtml(hop.verdict)}</span>
+      </header>
+      ${checks.filter(([key]) => hop.checks[key].status !== "skip").map(([key, label, links]) => `
+        <div class="chain-detail__check chain-detail__check--${escapeHtml(hop.checks[key].status)}">
+          <strong>${escapeHtml(label)}</strong>
+          <p>${escapeHtml(hop.checks[key].message)}</p>
+          ${links.length
+            ? `<p class="chain-detail__check-sources">${links.map(([url, label]) => linkTo(url, label)).join(" ")}</p>`
+            : ""}
+        </div>
+      `).join("")}
+      ${hop.seller ? `<pre class="chain-detail__raw">${escapeHtml(JSON.stringify(hop.seller, null, 2))}</pre>` : ""}
+      ${hop.adsTxtLine ? `<pre class="chain-detail__raw">${escapeHtml(hop.adsTxtLine)}</pre>` : ""}
+    </article>
+  `;
 }

@@ -31,6 +31,32 @@ Alongside the status, each result also surfaces:
 
 Results can be copied as JSON from the UI for use elsewhere.
 
+## Bid request supply-chain audit
+
+A second panel audits a pasted or uploaded OpenRTB bid request instead of a bare ads.txt
+URL and account ID. Paste the JSON (or drop a `.json` file up to 5 MB) and the browser
+extracts only `id`, `site`, `app`, `dooh` and `source` before sending anything to the
+server — `device`, `user`, `regs` and `imp` never leave the page.
+
+The server walks every node in the bid request's supply chain object
+(`source.ext.schain`, or `source.schain`) and, for each hop, checks:
+
+- the ad system's `sellers.json` is reachable
+- the seller ID from the chain node is present in it
+- the declared `seller_type` is valid for that hop's position (`DIRECT` for the first hop, `RESELLER` after)
+- the hop's seller domain links back to the previous hop's ad system domain (the chain link check)
+- the hop is declared in the publisher's or app developer's `ads.txt`/`app-ads.txt`
+- the first hop's seller domain aligns with the publisher/app domain
+
+Each hop is rendered as `pass`, `broken`, or `unverifiable` — `unverifiable` is not a soft
+failure, it means the hop genuinely could not be checked (a confidential seller record, or
+an unreachable `sellers.json`). The result is shown as a flow diagram plus per-hop detail,
+with links back to every `ads.txt`/`app-ads.txt` and `sellers.json` source file used.
+
+If a bid request has no supply chain to audit, or the app's developer domain can't be
+resolved automatically, the panel asks for what it needs (or hands you back to the
+ads.txt form above, which takes a full URL and account ID).
+
 ## Why it needs a server
 
 Most adtech servers do not send CORS headers, so a browser cannot fetch `ads.txt` or `sellers.json` files directly from another origin. All outbound requests are therefore proxied through the Express backend. A purely static version of this tool is not possible.
@@ -138,6 +164,18 @@ The backend can also be called directly:
 ```bash
 curl -X POST http://localhost:3000/api/validate -H "Content-Type: application/json" -d '{"adsTxtUrl":"https://www.example-publisher.com/ads.txt","accountId":"pub-1234567890"}'
 ```
+
+`POST /api/audit-chain` takes a reduced bid request (and an optional `originDomainOverride`
+when the publisher/app domain can't be resolved automatically) and returns the supply-chain
+audit described above:
+
+```bash
+curl -X POST http://localhost:3000/api/audit-chain -H "Content-Type: application/json" -d '{"bidRequest":{"site":{"domain":"example-publisher.com"},"source":{"ext":{"schain":{"nodes":[{"asi":"exchange.example","sid":"pub-1234567890"}]}}}}}'
+```
+
+It responds with 422 and `reason: "no_schain"` when the bid request declares no supply
+chain, or `reason: "origin_domain_required"` when the publisher/app domain couldn't be
+resolved and no override was supplied.
 
 A health check is available at `GET /api/health`.
 
