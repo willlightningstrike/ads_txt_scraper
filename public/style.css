@@ -145,6 +145,12 @@ body::before {
 .panel--results {
   padding: 28px;
   min-height: 640px;
+  /* The audit's flow diagram is the feature's primary output, so the results panel
+     takes the wide column and spans both form rows; the two input panels stack in the
+     narrow column instead. Reset in the single-column media query below so mobile still
+     stacks all three panels in DOM order. */
+  grid-column: 2;
+  grid-row: 1 / span 2;
 }
 
 .panel__heading h2 {
@@ -450,6 +456,11 @@ button:disabled {
 
   .panel--form {
     position: static;
+  }
+
+  .panel--results {
+    grid-column: auto;
+    grid-row: auto;
   }
 }
 
