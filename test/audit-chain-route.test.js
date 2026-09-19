@@ -35,19 +35,26 @@ test.afterEach(() => {
   dns.promises.lookup = realDnsLookup;
 });
 
-const STUBBED_HOSTNAMES = new Set(["dailynews.example", "exchange-a.com"]);
+const STUBBED_HOSTNAMES = new Set(["dailynews.example", "exchange-a.com", "partner.example"]);
 
 // Stubs the outbound fetches only. axios.post is untouched, so the test client still works.
 // dailynews.example (RFC 2606 reserved) and exchange-a.com (unregistered) never resolve
 // over real DNS, so the lookup validateExternalUrl performs is stubbed too, for those
 // hostnames only — every other hostname (e.g. the real itunes.apple.com lookup exercised
 // elsewhere in this file) still resolves for real.
-function stubOutbound() {
+// adsTxtByHost lets one host serve a different ads.txt than another, which the
+// inventory-partner tests need; failHosts makes a host's fetch throw.
+function stubOutbound({ adsTxtByHost = null, failHosts = [] } = {}) {
   axios.get = async (url) => {
+    const host = new URL(url).hostname;
+    if (failHosts.includes(host)) {
+      throw new Error(`connection refused to ${host}`);
+    }
     // Matches both /ads.txt and /app-ads.txt — origin.file is "app-ads.txt" for
     // app-kind bid requests, and a plain "/ads.txt" substring check misses that path.
     if (/\/(app-)?ads\.txt$/.test(url)) {
-      return { status: 200, data: ADS_TXT, headers: {}, request: { res: { responseUrl: url } } };
+      const data = adsTxtByHost && host in adsTxtByHost ? adsTxtByHost[host] : ADS_TXT;
+      return { status: 200, data, headers: {}, request: { res: { responseUrl: url } } };
     }
     if (url.includes("/sellers.json")) {
       return { status: 200, data: SELLERS_JSON, headers: {}, request: { res: { responseUrl: url } } };
@@ -196,4 +203,77 @@ test("a body over 100kb to /api/validate is rejected with 413, as JSON rather th
   assert.match(response.headers["content-type"], /application\/json/);
   assert.equal(typeof response.data.error, "string");
   assert.ok(!response.data.error.includes("node_modules"));
+});
+
+// --- inventorypartnerdomain: a two-file audit ---
+// The owner's ads.txt must declare INVENTORYPARTNERDOMAIN=<partner>; the schain is then
+// checked against the union of the owner's and the partner's entries.
+
+const PARTNER_REQUEST = {
+  site: { domain: "dailynews.example", inventorypartnerdomain: "partner.example" },
+  source: { ext: { schain: SCHAIN } }
+};
+
+test("a declared inventory partner's ads.txt authorizes the schain", async () => {
+  stubOutbound({ adsTxtByHost: {
+    "dailynews.example": "INVENTORYPARTNERDOMAIN=partner.example\nother.com, 1, DIRECT\n",
+    "partner.example": "exchange-a.com, 12345, DIRECT\n"
+  } });
+
+  const response = await axios.post(`${baseUrl}/api/audit-chain`, { bidRequest: PARTNER_REQUEST });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.data.verdict, "pass");
+  const check = response.data.hops[0].checks.adsTxtDeclared;
+  assert.equal(check.status, "pass");
+  assert.match(check.message, /partner\.example\/ads\.txt/);
+  const adsTxtSources = response.data.sources.filter((s) => s.kind === "ads-txt").map((s) => s.url);
+  assert.deepEqual(adsTxtSources, ["https://dailynews.example/ads.txt", "https://partner.example/ads.txt"]);
+  assert.equal(response.data.chainChecks.some((c) => c.code === "inventory_partner_undeclared"), false);
+});
+
+test("an inventory partner the owner never declared breaks the chain", async () => {
+  stubOutbound({ adsTxtByHost: {
+    "dailynews.example": "other.com, 1, DIRECT\n",
+    "partner.example": "exchange-a.com, 12345, DIRECT\n"
+  } });
+
+  const response = await axios.post(`${baseUrl}/api/audit-chain`, { bidRequest: PARTNER_REQUEST });
+
+  assert.equal(response.status, 200);
+  const check = response.data.chainChecks.find((c) => c.code === "inventory_partner_undeclared");
+  assert.equal(check.status, "fail");
+  assert.match(check.message, /INVENTORYPARTNERDOMAIN=partner\.example/);
+  assert.equal(response.data.verdict, "broken");
+  assert.equal(response.data.firstFailedHop, null);
+});
+
+test("the owner's own entries still count when the partner file does not list the seller", async () => {
+  stubOutbound({ adsTxtByHost: {
+    "dailynews.example": "INVENTORYPARTNERDOMAIN=partner.example\nexchange-a.com, 12345, DIRECT\n",
+    "partner.example": "other.com, 9, DIRECT\n"
+  } });
+
+  const response = await axios.post(`${baseUrl}/api/audit-chain`, { bidRequest: PARTNER_REQUEST });
+
+  assert.equal(response.status, 200);
+  const check = response.data.hops[0].checks.adsTxtDeclared;
+  assert.equal(check.status, "pass");
+  assert.match(check.message, /dailynews\.example\/ads\.txt/);
+  assert.equal(response.data.verdict, "pass");
+});
+
+test("an unreachable partner file is a warning, and the owner's entries are still audited", async () => {
+  stubOutbound({
+    adsTxtByHost: { "dailynews.example": "INVENTORYPARTNERDOMAIN=partner.example\nexchange-a.com, 12345, DIRECT\n" },
+    failHosts: ["partner.example"]
+  });
+
+  const response = await axios.post(`${baseUrl}/api/audit-chain`, { bidRequest: PARTNER_REQUEST });
+
+  assert.equal(response.status, 200);
+  const check = response.data.chainChecks.find((c) => c.code === "inventory_partner_unreachable");
+  assert.equal(check.status, "warn");
+  assert.equal(response.data.hops[0].checks.adsTxtDeclared.status, "pass");
+  assert.equal(response.data.verdict, "pass");
 });

@@ -343,3 +343,46 @@ test("exactly 32 valid nodes is not truncated", () => {
   assert.equal(result.nodes.length, 32);
   assert.ok(!result.warnings.some((w) => w.code === "schain_truncated"));
 });
+
+// --- inventorypartnerdomain (ads.txt 1.1 / OpenRTB 2.6 inventory sharing) ---
+
+test("site.inventorypartnerdomain is extracted and normalized", () => {
+  const result = extractBidRequest({
+    site: { domain: "owner.example", inventorypartnerdomain: " Partner.Example. " },
+    source: { ext: { schain: SCHAIN } }
+  });
+
+  assert.equal(result.origin.inventoryPartnerDomain, "partner.example");
+});
+
+test("app.inventorypartnerdomain is extracted too", () => {
+  const result = extractBidRequest({
+    app: { domain: "dev.example", bundle: "com.a.b", inventorypartnerdomain: "partner.example" },
+    source: { ext: { schain: SCHAIN } }
+  });
+
+  assert.equal(result.origin.inventoryPartnerDomain, "partner.example");
+});
+
+test("inventoryPartnerDomain is null when absent", () => {
+  const result = extractBidRequest({ site: { domain: "owner.example" }, source: { ext: { schain: SCHAIN } } });
+  assert.equal(result.origin.inventoryPartnerDomain, null);
+});
+
+test("an inventorypartnerdomain equal to the origin domain is not a partnership", () => {
+  const result = extractBidRequest({
+    site: { domain: "owner.example", inventorypartnerdomain: "OWNER.example" },
+    source: { ext: { schain: SCHAIN } }
+  });
+
+  assert.equal(result.origin.inventoryPartnerDomain, null);
+});
+
+test("a hostile inventorypartnerdomain degrades to null rather than throwing", () => {
+  const result = extractBidRequest({
+    site: { domain: "owner.example", inventorypartnerdomain: { toString: 1 } },
+    source: { ext: { schain: SCHAIN } }
+  });
+
+  assert.equal(result.origin.inventoryPartnerDomain, null);
+});

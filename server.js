@@ -8,7 +8,7 @@ const {
   summarize,
   validateSellerType
 } = require("./lib/validation");
-const { parseAdsTxt } = require("./lib/ads-txt");
+const { parseAdsTxt, parseAdsTxtVariables } = require("./lib/ads-txt");
 const {
   buildAxiosOptions,
   createPinnedLookup,
@@ -155,7 +155,50 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
     // path segment); adsTarget.hostname is what was actually validated and fetched, so
     // the reported origin must match the file that was actually read, not the raw input.
     origin.domain = adsTarget.hostname;
-    const adsEntries = parseAdsTxt(await fetchText(adsTarget, controller.signal));
+    const ownerFile = `${adsTarget.hostname}/${origin.file}`;
+    const ownerText = await fetchText(adsTarget, controller.signal);
+    const adsEntries = tagAdsEntries(parseAdsTxt(ownerText), ownerFile);
+    const partnerChecks = [];
+    let partnerSource = null;
+
+    // OpenRTB 2.6 inventory sharing: the partner's file is where the schain's sellers are
+    // expected to be declared, and the owner's file must carry an INVENTORYPARTNERDOMAIN=
+    // line authorizing the arrangement — without it, the bid request is asserting a
+    // partnership the owner never agreed to. The schain is then checked against the
+    // UNION of both files' entries, so a seller declared by either file passes.
+    if (origin.inventoryPartnerDomain) {
+      const partner = origin.inventoryPartnerDomain;
+      const declared = (parseAdsTxtVariables(ownerText).inventorypartnerdomain || [])
+        .map((value) => normalizeHostname(value))
+        .includes(partner);
+
+      if (!declared) {
+        partnerChecks.push({
+          code: "inventory_partner_undeclared",
+          status: "fail",
+          message: `The bid request names ${partner} as an inventory partner, but ${ownerFile} has no INVENTORYPARTNERDOMAIN=${partner} line authorizing that arrangement.`
+        });
+      }
+
+      try {
+        const partnerTarget = await validateExternalUrl(`https://${partner}/${origin.file}`);
+        const partnerFile = `${partnerTarget.hostname}/${origin.file}`;
+        const partnerText = await fetchText(partnerTarget, controller.signal);
+        adsEntries.push(...tagAdsEntries(parseAdsTxt(partnerText), partnerFile));
+        partnerSource = { kind: "ads-txt", label: partnerFile, url: `https://${partnerFile}` };
+      } catch (error) {
+        if (controller.signal.aborted) {
+          throw error;
+        }
+        // The declaration check above is the security control; a partner file that
+        // cannot be read only narrows what can be verified, so it is a warning.
+        partnerChecks.push({
+          code: "inventory_partner_unreachable",
+          status: "warn",
+          message: `The inventory partner file https://${partner}/${origin.file} could not be fetched (${error.message}). The supply chain was checked against ${ownerFile} only.`
+        });
+      }
+    }
 
     const result = await auditChain(
       { ...normalized, origin },
@@ -163,6 +206,7 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
         adsEntries,
         loadSellers: fetchSellersJson,
         originDomain: adsTarget.hostname,
+        chainChecks: partnerChecks,
         // Combined so either the client disconnecting or the audit simply taking too
         // long stops the walk between hops; auditChain already checks signal?.aborted
         // there and returns whatever partial result it has so far.
@@ -172,6 +216,11 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
 
     if (controller.signal.aborted) {
       return;
+    }
+
+    if (partnerSource) {
+      // Keep both ads.txt files together at the head of the sources bar.
+      result.sources.splice(1, 0, partnerSource);
     }
 
     // The signal passed to auditChain is a union of controller.signal (checked above)
@@ -216,6 +265,12 @@ if (require.main === module) {
   app.listen(PORT, HOST, () => {
     console.log(`Ads.txt validator running at http://${HOST}:${PORT}`);
   });
+}
+
+// Entries from two ads.txt files are audited together; the tag lets a hop say which
+// file declared it, since line numbers alone collide across files.
+function tagAdsEntries(entries, sourceFile) {
+  return entries.map((entry) => ({ ...entry, sourceFile }));
 }
 
 async function mapWithConcurrency(items, limit, mapper, signal = null) {

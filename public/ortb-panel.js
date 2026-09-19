@@ -123,6 +123,8 @@ function renderExtractCard(reduced) {
   const app = reduced.app || {};
   const dooh = reduced.dooh || {};
   const nodes = schainNodes(reduced);
+  // OpenRTB 2.6 inventory sharing: shown so the user knows a second ads.txt will be read.
+  const partner = reduced.site?.inventorypartnerdomain ?? reduced.app?.inventorypartnerdomain ?? null;
   const kind = inventoryKind(reduced);
   const domain = kind === "app"
     ? app.domain
@@ -143,6 +145,7 @@ function renderExtractCard(reduced) {
           ? `<dt>Bundle</dt><dd>${escapeHtml(app.bundle || "—")}</dd>
              <dt>Store URL</dt><dd>${escapeHtml(app.storeurl || "—")}</dd>`
           : `<dt>Domain</dt><dd>${escapeHtml(domain || "—")}</dd>`}
+        ${partner ? `<dt>Inventory partner</dt><dd>${escapeHtml(partner)}</dd>` : ""}
         <dt>Supply chain</dt><dd>${nodes.length} node${nodes.length === 1 ? "" : "s"}</dd>
       </dl>
       ${needsInput ? originPrompt(kind, file, app.storeurl) : ""}

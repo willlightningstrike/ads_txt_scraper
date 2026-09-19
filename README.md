@@ -46,6 +46,7 @@ The server walks every node in the bid request's supply chain object
 - the declared `seller_type` is valid for that hop's position (`DIRECT` for the first hop, `RESELLER` after)
 - the hop's seller domain links back to the previous hop's ad system domain (the chain link check)
 - the hop is declared in the publisher's or app developer's `ads.txt`/`app-ads.txt`
+- when the request names an inventory partner (`site.inventorypartnerdomain` / `app.inventorypartnerdomain`, OpenRTB 2.6), the owner's file must carry an `INVENTORYPARTNERDOMAIN=<partner>` line authorizing the arrangement, and the hop counts as declared if either the owner's or the partner's file lists it
 - the first hop's seller domain aligns with the publisher/app domain
 
 Each hop is rendered as `pass`, `broken`, or `unverifiable` — `unverifiable` is not a soft
@@ -116,7 +117,7 @@ If the seller ID does not appear anywhere in the `ads.txt` file, the report says
 npm test
 ```
 
-The suite runs on Node's built-in `node --test` runner and currently has 104 tests across nine files, covering the SSRF/URL-validation layer (private IP detection, IPv6 handling, DNS pinning), ads.txt and sellers.json parsing, the `sellers.json` LRU/TTL cache, OpenRTB bid-request extraction and supply-chain auditing, app-developer-domain resolution, and route-level tests for both `POST /api/validate` and `POST /api/audit-chain`.
+The suite runs on Node's built-in `node --test` runner and currently has 123 tests across ten files, covering the SSRF/URL-validation layer (private IP detection, IPv6 handling, DNS pinning), ads.txt and sellers.json parsing, the `sellers.json` LRU/TTL cache, OpenRTB bid-request extraction and supply-chain auditing, app-developer-domain resolution, and route-level tests for both `POST /api/validate` and `POST /api/audit-chain`.
 
 ## Configuration
 
@@ -212,7 +213,7 @@ public/app.js                      ads.txt form handling and result rendering (v
 public/ortb-panel.js               Bid-request paste/upload panel and chain-audit result rendering
 public/bid-request-extract.js      Client-side reduction of a pasted bid request to allowed fields
 public/style.css                   Styles
-test/                              104 tests across nine files (node --test) covering every lib/ module
+test/                              123 tests across ten files (node --test) covering every lib/ module
                                     plus route-level tests for /api/validate and /api/audit-chain
 ```
 
