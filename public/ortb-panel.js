@@ -131,14 +131,20 @@ function renderExtractCard(reduced) {
     : kind === "dooh"
       ? dooh.domain
       : site.domain || hostOf(site.page);
-  const needsInput = !domain;
+  // When the store URL names a store the server resolves on its own, a missing app.domain
+  // is not something the user has to supply. This only shapes the prompt: the server
+  // still decides, and a failed lookup reopens the card at the field (submit handler).
+  const autoStore = kind === "app" && !domain ? autoResolvingStore(app.storeurl) : null;
+  const needsInput = !domain && !autoStore;
   const file = kind === "app" ? "app-ads.txt" : "ads.txt";
   const inventoryLabel = kind === "app" ? "App" : kind === "dooh" ? "DOOH" : "Site";
 
   extractCard.hidden = false;
   extractCard.innerHTML = `
     <details class="extract-card__details" ${needsInput ? "open" : ""}>
-      <summary>Extracted from this request${needsInput ? " — 1 needs input" : ""}</summary>
+      <summary>Extracted from this request${needsInput
+        ? " — 1 needs input"
+        : autoStore ? ` — developer domain from the ${escapeHtml(autoStore)} listing` : ""}</summary>
       <dl class="extract-card__rows">
         <dt>Inventory</dt><dd>${escapeHtml(inventoryLabel)}</dd>
         ${kind === "app"
@@ -148,7 +154,7 @@ function renderExtractCard(reduced) {
         ${partner ? `<dt>Inventory partner</dt><dd>${escapeHtml(partner)}</dd>` : ""}
         <dt>Supply chain</dt><dd>${nodes.length} node${nodes.length === 1 ? "" : "s"}</dd>
       </dl>
-      ${needsInput ? originPrompt(kind, file, app.storeurl) : ""}
+      ${!domain ? originPrompt(kind, file, app.storeurl, autoStore) : ""}
     </details>
   `;
 
@@ -165,9 +171,31 @@ function updateResolvedTarget(domainValue, file, target) {
   target.textContent = `https://${domainValue || "<domain>"}/${file}`;
 }
 
-function originPrompt(kind, file, storeurl) {
+// Stores whose developer domain lib/app-domain.js resolves server-side, matched the same
+// way (exact or true subdomain). Amazon is deliberately absent: its listings publish the
+// tag but turn away server requests, so a Fire TV app still needs the domain typed in.
+const AUTO_RESOLVING_STORES = [
+  ["App Store", ["apps.apple.com", "itunes.apple.com"]],
+  ["Roku", ["channelstore.roku.com"]],
+  ["LG", ["lgappstv.com"]],
+  ["Samsung", ["samsung.com"]]
+];
+
+function autoResolvingStore(storeurl) {
+  let host;
+  try {
+    host = new URL(String(storeurl)).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+  const match = AUTO_RESOLVING_STORES.find(([, domains]) =>
+    domains.some((domain) => host === domain || host.endsWith(`.${domain}`)));
+  return match ? match[0] : null;
+}
+
+function originPrompt(kind, file, storeurl, autoStore = null) {
   const isApp = kind === "app";
-  const label = isApp ? "Developer domain" : "Publisher domain";
+  const label = autoStore ? "Developer domain (optional)" : isApp ? "Developer domain" : "Publisher domain";
   // Site and DOOH requests have no store listing and no "developer" — only app requests
   // do, so the explanation and the store link must both be conditioned on origin kind,
   // not just the file name (DOOH shares site's file, "ads.txt").
@@ -185,8 +213,10 @@ function originPrompt(kind, file, storeurl) {
         <input id="ortb-origin-domain" type="text" placeholder="example.com" autocomplete="off" />
       </label>
       <p class="extract-card__hint">
-        Not in the bid request. ${escapeHtml(file)} ${escapeHtml(explanation)}.
-        Enter the domain and we will fetch <code id="ortb-resolved-target">https://&lt;domain&gt;/${escapeHtml(file)}</code>.
+        ${autoStore
+          ? `Looked up automatically from the ${escapeHtml(autoStore)} listing. Enter a domain only to override it, and we will fetch`
+          : `Not in the bid request. ${escapeHtml(file)} ${escapeHtml(explanation)}. Enter the domain and we will fetch`}
+        <code id="ortb-resolved-target">https://&lt;domain&gt;/${escapeHtml(file)}</code>.
         ${storeLink}
       </p>
     </div>
@@ -295,6 +325,13 @@ form.addEventListener("submit", async (event) => {
     if (payload.reason === "no_schain") {
       goToAdsTxtForm(payload.error);
       return;
+    }
+
+    if (payload.reason === "origin_domain_required") {
+      // Even a supported store's lookup can fail (a listing without the tag), and the
+      // card starts collapsed for those — so reopen it with the cursor in the field.
+      extractCard.querySelector("details")?.setAttribute("open", "");
+      document.getElementById("ortb-origin-domain")?.focus();
     }
 
     if (!response.ok) {
