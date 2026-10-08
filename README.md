@@ -54,6 +54,14 @@ failure, it means the hop genuinely could not be checked (a confidential seller 
 an unreachable `sellers.json`). The result is shown as a flow diagram plus per-hop detail,
 with links back to every `ads.txt`/`app-ads.txt` and `sellers.json` source file used.
 
+For app inventory, the server works out where `app-ads.txt` lives in this order:
+`app.domain` from the bid request; a small curated map; then the store named by
+`app.storeurl` — Apple via its lookup API (numeric App Store IDs and reverse-DNS bundle
+IDs are both handled), and Roku, LG and Samsung via the IAB
+`<meta name="appstore:developer_url">` tag their listings publish. Amazon's listings carry
+the same tag but turn away server-side requests, so Fire TV apps need `app.domain` or a
+domain entered by hand. A bundle is only ever looked up in the store its `storeurl` names.
+
 If a bid request has no supply chain to audit, or the app's developer domain can't be
 resolved automatically, the panel asks for what it needs (or hands you back to the
 ads.txt form above, which takes a full URL and account ID).
@@ -117,7 +125,7 @@ If the seller ID does not appear anywhere in the `ads.txt` file, the report says
 npm test
 ```
 
-The suite runs on Node's built-in `node --test` runner and currently has 123 tests across ten files, covering the SSRF/URL-validation layer (private IP detection, IPv6 handling, DNS pinning), ads.txt and sellers.json parsing, the `sellers.json` LRU/TTL cache, OpenRTB bid-request extraction and supply-chain auditing, app-developer-domain resolution, and route-level tests for both `POST /api/validate` and `POST /api/audit-chain`.
+The suite runs on Node's built-in `node --test` runner and currently has 134 tests across ten files, covering the SSRF/URL-validation layer (private IP detection, IPv6 handling, DNS pinning), ads.txt and sellers.json parsing, the `sellers.json` LRU/TTL cache, OpenRTB bid-request extraction and supply-chain auditing, app-developer-domain resolution, and route-level tests for both `POST /api/validate` and `POST /api/audit-chain`.
 
 ## Configuration
 
@@ -213,7 +221,7 @@ public/app.js                      ads.txt form handling and result rendering (v
 public/ortb-panel.js               Bid-request paste/upload panel and chain-audit result rendering
 public/bid-request-extract.js      Client-side reduction of a pasted bid request to allowed fields
 public/style.css                   Styles
-test/                              123 tests across ten files (node --test) covering every lib/ module
+test/                              134 tests across ten files (node --test) covering every lib/ module
                                     plus route-level tests for /api/validate and /api/audit-chain
 ```
 
