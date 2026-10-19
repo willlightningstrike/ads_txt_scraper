@@ -162,7 +162,7 @@ test("broken outranks unverifiable in the chain verdict", async () => {
       { asi: "gone.example", sid: "1", name: null, domain: null, hp: 1, rid: null }
     ] }),
     {
-      adsEntries: ADS_ENTRIES,
+      adsEntries: [...ADS_ENTRIES, { adSystemDomain: "gone.example", accountId: "1", relationship: "RESELLER", lineNumber: 10, raw: "gone.example, 1, RESELLER" }],
       originDomain: "dailynews.example",
       loadSellers: async (url) => {
         if (url.includes("gone.example")) {
@@ -362,3 +362,95 @@ test("an empty node list produces an unverifiable result rather than a pass", as
   assert.equal(result.verdict, "unverifiable");
   assert.equal(result.hops.length, 0);
 });
+
+for (const relationship of ["RESELLER", "INVALID"]) {
+  test(`the first-hop declaration ${relationship} cannot certify a publisher`, async () => {
+    const result = await run({ nodes: [NODES[0]] }, {
+      adsEntries: [{ ...ADS_ENTRIES[0], relationship }]
+    });
+    assert.equal(result.verdict, "broken");
+    assert.equal(result.hops[0].checks.sellerTypeValid.status, "fail");
+    assert.match(result.hops[0].checks.sellerTypeValid.message, new RegExp(relationship));
+  });
+}
+
+test("a later DIRECT declaration cannot pass just because the seller is BOTH", async () => {
+  const result = await run({}, {
+    adsEntries: [ADS_ENTRIES[0], { ...ADS_ENTRIES[1], relationship: "DIRECT" }],
+    loadSellers: async (url) => ({ sellers: SELLERS[url].sellers.map((seller) => ({ ...seller, seller_type: "BOTH" })) })
+  });
+  assert.equal(result.verdict, "broken");
+  assert.equal(result.hops[1].checks.adsTxtDeclared.status, "fail");
+});
+
+test("a valid duplicate declaration is not hidden by an invalid earlier row", async () => {
+  const result = await run({}, {
+    adsEntries: [{ ...ADS_ENTRIES[0], relationship: "INVALID" }, ...ADS_ENTRIES]
+  });
+  assert.equal(result.verdict, "pass");
+  assert.match(result.hops[0].checks.adsTxtDeclared.message, /as DIRECT/);
+});
+
+test("a chain truncated by normalization remains unverifiable", async () => {
+  const { extractBidRequest } = require("../lib/ortb");
+  const nodes = Array.from({ length: 33 }, (_,i) => ({ asi: `ssp${i}.example`, sid: String(i) }));
+  const input = extractBidRequest({ site: { domain: "dailynews.example" }, source: { schain: { complete: 1, nodes } } });
+  const result = await auditChain(input, {
+    originDomain: "dailynews.example",
+    adsEntries: nodes.map((node, i) => ({ adSystemDomain: node.asi, accountId: node.sid, relationship: i ? "RESELLER" : "DIRECT", lineNumber: i+1, raw: "fixture" })),
+    loadSellers: async (url) => {
+      const i = Number(new URL(url).hostname.match(/ssp(\d+)/)[1]);
+      return { sellers: [{ seller_id: String(i), seller_type: i ? "INTERMEDIARY" : "PUBLISHER", domain: i ? `ssp${i-1}.example` : "dailynews.example" }] };
+    }
+  });
+  assert.equal(result.summary.hops, 32);
+  assert.equal(result.verdict, "unverifiable");
+});
+
+test("a dropped malformed node makes the chain broken", async () => {
+  const { extractBidRequest } = require("../lib/ortb");
+  const input = extractBidRequest({ site: { domain: "dailynews.example" }, source: { schain: { complete: 1, nodes: [NODES[0], { asi: "bad.example" }] } } });
+  const result = await auditChain(input, { adsEntries: ADS_ENTRIES, loadSellers, originDomain: "dailynews.example" });
+  assert.equal(result.verdict, "broken");
+  assert.equal(result.chainChecks.find((c) => c.code === "invalid_schain_node").status, "fail");
+});
+
+test("an incomplete chain starting with a declared reseller does not invent a publisher failure", async () => {
+  const result = await run({ complete: 0, nodes: [NODES[1]] });
+  assert.equal(result.hops[0].checks.sellerTypeValid.status, "pass");
+  assert.equal(result.hops[0].checks.sellerDomainAlignment.status, "skip");
+  assert.equal(result.hops[0].verdict, "pass");
+  assert.equal(result.verdict, "unverifiable");
+});
+
+test("missing completeness cannot certify an end-to-end chain", async () => {
+  const result = await run({ complete: null });
+  assert.equal(result.verdict, "unverifiable");
+});
+
+test("a known undeclared downstream hop remains broken when sellers.json is unavailable", async () => {
+  const result = await run({}, {
+    adsEntries: [ADS_ENTRIES[0]],
+    loadSellers: async (url) => { if (url.includes("bigssp")) throw new Error("unavailable"); return SELLERS[url]; }
+  });
+  assert.equal(result.verdict, "broken");
+  assert.equal(result.hops[1].verdict, "broken");
+  assert.equal(result.summary.undeclared, 1);
+});
+
+for (const confidential of [0, 1]) {
+  test(`incomplete first-hop duplicate declarations use the known seller type (confidential=${confidential})`, async () => {
+    const direct = { ...ADS_ENTRIES[1], relationship: "DIRECT", ownerDomain: "exchange-a.com", sourceFile: "owner.example/ads.txt" };
+    const reseller = { ...ADS_ENTRIES[1], ownerDomain: "partner.example", sourceFile: "partner.example/ads.txt" };
+    for (const adsEntries of [[direct, reseller], [reseller, direct]]) {
+      const result = await run({ complete: 0, nodes: [NODES[1]] }, {
+        adsEntries,
+        loadSellers: async () => ({ sellers: [{ seller_id: "ex-a-7788", seller_type: "INTERMEDIARY", domain: confidential ? undefined : "exchange-a.com", is_confidential: confidential }] })
+      });
+      assert.equal(result.verdict, "unverifiable");
+      assert.equal(result.hops[0].checks.sellerTypeValid.status, "pass");
+      assert.equal(result.hops[0].checks.sellerDomainAlignment.status, "skip");
+      assert.match(result.hops[0].checks.adsTxtDeclared.message, /partner\.example/);
+    }
+  });
+}

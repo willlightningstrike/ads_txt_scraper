@@ -33,3 +33,9 @@ test("a file with no variables yields an empty object, not undefined lookups tha
   const variables = parseAdsTxtVariables("google.com, pub-1, DIRECT");
   assert.equal(variables.inventorypartnerdomain, undefined);
 });
+
+test("constructor variable does not interfere with inventory partner parsing", () => {
+  const variables = parseAdsTxtVariables("constructor=hello\nINVENTORYPARTNERDOMAIN=partner.example\nconstructor=again");
+  assert.deepEqual(variables.inventorypartnerdomain, ["partner.example"]);
+  assert.deepEqual(variables.constructor, ["hello", "again"]);
+});

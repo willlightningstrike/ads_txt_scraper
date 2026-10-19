@@ -37,10 +37,8 @@ form.addEventListener("submit", async (event) => {
     return;
   }
 
-  abortInFlight("superseded");
   const request = startRequest();
 
-  setLoading(true);
   setFormMessage("");
 
   try {
@@ -54,6 +52,8 @@ form.addEventListener("submit", async (event) => {
     });
 
     const payload = await response.json();
+    if (!isCurrentRequest(request)) return;
+    request.controller.signal.throwIfAborted();
     if (!response.ok) {
       throw new Error(payload.error || "Validation failed.");
     }
@@ -65,7 +65,7 @@ form.addEventListener("submit", async (event) => {
   } catch (error) {
     // A superseded request lost ownership of the UI to a newer submission, so
     // it must not overwrite that request's results or error message.
-    if (request.reason !== "superseded") {
+    if (isCurrentRequest(request)) {
       latestPayload = null;
       copyJsonButton.hidden = true;
       showEmptyState();
@@ -242,6 +242,7 @@ export function setLatestPayload(value) {
 
 export function setLoading(isLoading) {
   submitButton.disabled = isLoading;
+  document.getElementById("ortb-submit").disabled = isLoading;
   cancelButton.hidden = !isLoading;
   loadingState.hidden = !isLoading;
 
@@ -251,16 +252,23 @@ export function setLoading(isLoading) {
   }
 }
 
-function startRequest() {
-  const request = { controller: new AbortController(), reason: null };
+export function startRequest(timeoutMs = CLIENT_TIMEOUT_MS, label = "Validation") {
+  abortInFlight("superseded");
+  const request = { controller: new AbortController(), reason: null, timeoutMs, label };
 
   request.deadline = setTimeout(() => {
     request.reason = "timeout";
     request.controller.abort();
-  }, CLIENT_TIMEOUT_MS);
+  }, timeoutMs);
 
   inFlight = request;
+  setLatestPayload(null);
+  setLoading(true);
   return request;
+}
+
+export function isCurrentRequest(request) {
+  return inFlight === request;
 }
 
 function abortInFlight(reason) {
@@ -272,7 +280,7 @@ function abortInFlight(reason) {
   inFlight.controller.abort();
 }
 
-function finishRequest(request) {
+export function finishRequest(request) {
   clearTimeout(request.deadline);
 
   // Only the request that still owns the UI clears the loading state; a
@@ -280,16 +288,18 @@ function finishRequest(request) {
   if (inFlight === request) {
     inFlight = null;
     setLoading(false);
+    return true;
   }
+  return false;
 }
 
-function describeFailure(error, request) {
+export function describeFailure(error, request) {
   if (request.reason === "cancelled") {
-    return "Validation cancelled.";
+    return `${request.label} cancelled.`;
   }
 
   if (request.reason === "timeout") {
-    return `No response after ${Math.round(CLIENT_TIMEOUT_MS / 1000)} seconds. The server may be unreachable.`;
+    return `No response after ${Math.round(request.timeoutMs / 1000)} seconds. The server may be unreachable.`;
   }
 
   return error.message || "Something went wrong during validation.";

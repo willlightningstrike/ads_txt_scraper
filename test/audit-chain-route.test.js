@@ -4,6 +4,7 @@ const axios = require("axios");
 const dns = require("dns");
 
 const { app } = require("../server");
+const { sellersCache } = require("../lib/sellers-json");
 
 const SCHAIN = { ver: "1.0", complete: 1, nodes: [{ asi: "exchange-a.com", sid: "12345" }] };
 
@@ -31,6 +32,7 @@ test.after(() => {
 });
 
 test.afterEach(() => {
+  sellersCache.items.clear();
   axios.get = realGet;
   dns.promises.lookup = realDnsLookup;
 });
@@ -44,7 +46,8 @@ const STUBBED_HOSTNAMES = new Set(["dailynews.example", "exchange-a.com", "partn
 // elsewhere in this file) still resolves for real.
 // adsTxtByHost lets one host serve a different ads.txt than another, which the
 // inventory-partner tests need; failHosts makes a host's fetch throw.
-function stubOutbound({ adsTxtByHost = null, failHosts = [] } = {}) {
+function stubOutbound({ adsTxtByHost = null, failHosts = [], files = null, sellerDomain = "dailynews.example", sellerName = "Daily News" } = {}) {
+  sellersCache.items.clear();
   axios.get = async (url) => {
     const host = new URL(url).hostname;
     if (failHosts.includes(host)) {
@@ -53,11 +56,15 @@ function stubOutbound({ adsTxtByHost = null, failHosts = [] } = {}) {
     // Matches both /ads.txt and /app-ads.txt — origin.file is "app-ads.txt" for
     // app-kind bid requests, and a plain "/ads.txt" substring check misses that path.
     if (/\/(app-)?ads\.txt$/.test(url)) {
-      const data = adsTxtByHost && host in adsTxtByHost ? adsTxtByHost[host] : ADS_TXT;
+      if (files && !(url in files)) throw new Error(`No file at ${url}`);
+      const data = files ? files[url] : adsTxtByHost && host in adsTxtByHost ? adsTxtByHost[host] : ADS_TXT;
       return { status: 200, data, headers: {}, request: { res: { responseUrl: url } } };
     }
     if (url.includes("/sellers.json")) {
-      return { status: 200, data: SELLERS_JSON, headers: {}, request: { res: { responseUrl: url } } };
+      const payload = JSON.parse(SELLERS_JSON);
+      payload.sellers[0].domain = sellerDomain;
+      payload.sellers[0].name = sellerName;
+      return { status: 200, data: JSON.stringify(payload), headers: {}, request: { res: { responseUrl: url } } };
     }
     throw new Error(`unexpected outbound request to ${url}`);
   };
@@ -218,7 +225,7 @@ test("a declared inventory partner's ads.txt authorizes the schain", async () =>
   stubOutbound({ adsTxtByHost: {
     "dailynews.example": "INVENTORYPARTNERDOMAIN=partner.example\nother.com, 1, DIRECT\n",
     "partner.example": "exchange-a.com, 12345, DIRECT\n"
-  } });
+  }, sellerDomain: "partner.example" });
 
   const response = await axios.post(`${baseUrl}/api/audit-chain`, { bidRequest: PARTNER_REQUEST });
 
@@ -236,7 +243,7 @@ test("an inventory partner the owner never declared breaks the chain", async () 
   stubOutbound({ adsTxtByHost: {
     "dailynews.example": "other.com, 1, DIRECT\n",
     "partner.example": "exchange-a.com, 12345, DIRECT\n"
-  } });
+  }, sellerDomain: "partner.example" });
 
   const response = await axios.post(`${baseUrl}/api/audit-chain`, { bidRequest: PARTNER_REQUEST });
 
@@ -276,4 +283,59 @@ test("an unreachable partner file is a warning, and the owner's entries are stil
   assert.equal(check.status, "warn");
   assert.equal(response.data.hops[0].checks.adsTxtDeclared.status, "pass");
   assert.equal(response.data.verdict, "pass");
+});
+
+test("app inventory sharing reads the partner ads.txt and accepts the partner identity", async () => {
+  stubOutbound({ files: {
+    "https://dailynews.example/app-ads.txt": "INVENTORYPARTNERDOMAIN=partner.example",
+    "https://partner.example/ads.txt": ADS_TXT
+  }, sellerDomain: "partner.example" });
+  const response = await axios.post(`${baseUrl}/api/audit-chain`, { bidRequest: {
+    app: { domain: "dailynews.example", inventorypartnerdomain: "partner.example" },
+    source: { ext: { schain: SCHAIN } }
+  } });
+  assert.equal(response.data.verdict, "pass");
+  assert.ok(response.data.sources.some((source) => source.url === "https://partner.example/ads.txt"));
+});
+
+test("OWNERDOMAIN supplies the publisher business identity", async () => {
+  stubOutbound({ adsTxtByHost: { "dailynews.example": `OWNERDOMAIN=holding.example\n${ADS_TXT}` }, sellerDomain: "holding.example" });
+  const response = await axios.post(`${baseUrl}/api/audit-chain`, { bidRequest: { site: { domain: "dailynews.example" }, source: { schain: SCHAIN } } });
+  assert.equal(response.data.verdict, "pass");
+  assert.equal(response.data.hops[0].checks.sellerDomainAlignment.status, "pass");
+});
+
+test("partner OWNERDOMAIN is used even when the owner also lists the same account", async () => {
+  stubOutbound({ adsTxtByHost: {
+    "dailynews.example": `INVENTORYPARTNERDOMAIN=partner.example\n${ADS_TXT}`,
+    "partner.example": `OWNERDOMAIN=holding.example\n${ADS_TXT}`
+  }, sellerDomain: "holding.example" });
+  const response = await axios.post(`${baseUrl}/api/audit-chain`, { bidRequest: PARTNER_REQUEST });
+  assert.equal(response.data.verdict, "pass");
+  assert.match(response.data.hops[0].checks.adsTxtDeclared.message, /partner\.example\/ads\.txt/);
+});
+
+test("a business identity from an undeclared partner cannot authorize the chain", async () => {
+  stubOutbound({ adsTxtByHost: {
+    "dailynews.example": ADS_TXT,
+    "partner.example": `OWNERDOMAIN=holding.example\n${ADS_TXT}`
+  }, sellerDomain: "holding.example" });
+  const response = await axios.post(`${baseUrl}/api/audit-chain`, { bidRequest: PARTNER_REQUEST });
+  assert.equal(response.data.verdict, "broken");
+});
+
+test("a constructor extension in the owner file does not crash the audit", async () => {
+  stubOutbound({ adsTxtByHost: {
+    "dailynews.example": `constructor=hello\nINVENTORYPARTNERDOMAIN=partner.example\n${ADS_TXT}`
+  } });
+  const response = await axios.post(`${baseUrl}/api/audit-chain`, { bidRequest: PARTNER_REQUEST }, { validateStatus: () => true });
+  assert.equal(response.status, 200);
+  assert.equal(response.data.verdict, "pass");
+});
+
+test("the seller-ID route returns a displayable fallback for a hostile seller name", async () => {
+  stubOutbound({ sellerName: { toString: 1 } });
+  const response = await axios.post(`${baseUrl}/api/validate`, { adsTxtUrl: "https://dailynews.example/ads.txt", accountId: "12345" });
+  assert.equal(response.data.records[0].status, "valid");
+  assert.equal(response.data.records[0].seller.name, "Unknown seller");
 });

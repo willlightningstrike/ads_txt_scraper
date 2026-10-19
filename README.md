@@ -43,16 +43,28 @@ The server walks every node in the bid request's supply chain object
 
 - the ad system's `sellers.json` is reachable
 - the seller ID from the chain node is present in it
-- the declared `seller_type` is valid for that hop's position (`DIRECT` for the first hop, `RESELLER` after)
+- the declared `seller_type` agrees with the actual ads.txt relationship; complete chains require a `DIRECT` first hop and later hops require `RESELLER`
 - the hop's seller domain links back to the previous hop's ad system domain (the chain link check)
 - the hop is declared in the publisher's or app developer's `ads.txt`/`app-ads.txt`
-- when the request names an inventory partner (`site.inventorypartnerdomain` / `app.inventorypartnerdomain`, OpenRTB 2.6), the owner's file must carry an `INVENTORYPARTNERDOMAIN=<partner>` line authorizing the arrangement, and the hop counts as declared if either the owner's or the partner's file lists it
-- the first hop's seller domain aligns with the publisher/app domain
+- when the request names an inventory partner (`site.inventorypartnerdomain` / `app.inventorypartnerdomain`, OpenRTB 2.6), the owner's file must carry an `INVENTORYPARTNERDOMAIN=<partner>` line authorizing the arrangement, and the hop counts as declared if either the owner's file or the partner's `ads.txt` lists it (the partner always uses `ads.txt`, including for app inventory)
+- a complete chain's first seller aligns with the business identity of the authorizing file: its `OWNERDOMAIN`, or its host when that variable is absent
 
 Each hop is rendered as `pass`, `broken`, or `unverifiable` — `unverifiable` is not a soft
 failure, it means the hop genuinely could not be checked (a confidential seller record, or
 an unreachable `sellers.json`). The result is shown as a flow diagram plus per-hop detail,
 with links back to every `ads.txt`/`app-ads.txt` and `sellers.json` source file used.
+
+An incomplete chain (`complete: 0`, or no completeness flag) can start at a reseller.
+Its known hops are checked, but the chain remains `unverifiable` unless a confirmed
+failure makes it `broken`. Malformed nodes fail the chain; nodes omitted by the size
+limit prevent an end-to-end pass. A network failure never erases a known authorization
+failure.
+
+The audit's time budget covers app resolution, authorization files and seller lookups.
+Expiry during preparation returns a timeout error; expiry during the chain walk returns
+the partial audit with an explicit explanation. A caller can stop waiting for a shared
+sellers.json fetch without cancelling it for other callers. Both forms share one active
+request, and Cancel stops whichever operation is running.
 
 For app inventory, the server works out where `app-ads.txt` lives in this order:
 `app.domain` from the bid request; a small curated map; then the store named by
@@ -125,7 +137,7 @@ If the seller ID does not appear anywhere in the `ads.txt` file, the report says
 npm test
 ```
 
-The suite runs on Node's built-in `node --test` runner and currently has 134 tests across ten files, covering the SSRF/URL-validation layer (private IP detection, IPv6 handling, DNS pinning), ads.txt and sellers.json parsing, the `sellers.json` LRU/TTL cache, OpenRTB bid-request extraction and supply-chain auditing, app-developer-domain resolution, and route-level tests for both `POST /api/validate` and `POST /api/audit-chain`.
+The suite runs on Node's built-in `node --test` runner and currently has 162 tests across twelve files, covering the SSRF/URL-validation layer (private IP detection, IPv6 handling, DNS pinning), ads.txt and sellers.json parsing, the `sellers.json` LRU/TTL cache, OpenRTB bid-request extraction and supply-chain auditing, app-developer-domain resolution, route-level tests for both APIs, audit deadlines, and frontend cancellation and overlapping requests.
 
 ## Configuration
 
@@ -140,7 +152,7 @@ All settings are optional environment variables:
 | `MAX_CACHEABLE_JSON_BYTES` | `10485760` (10 MiB) | Max `sellers.json` size eligible for caching |
 | `SELLERS_CACHE_SIZE` | `10` | Number of `sellers.json` files held in the LRU cache |
 | `MAX_CONCURRENT_LOOKUPS` | `6` | Max `sellers.json` fetches in flight for one validation |
-| `AUDIT_BUDGET_MS` | `120000` (120 s) | Wall-clock cap on a single `/api/audit-chain` walk |
+| `AUDIT_BUDGET_MS` | `120000` (120 s) | Deadline for `/api/audit-chain` resolution, file retrieval and chain checks |
 
 Example:
 
@@ -212,6 +224,7 @@ server.js                          Express routes: /api/validate, /api/audit-cha
 lib/validation.js                  Domain comparison, seller-type validation, summary tallies
 lib/ads-txt.js                     ads.txt parsing
 lib/http-client.js                 SSRF-safe outbound fetch: URL validation, DNS pinning, redirects
+lib/abort.js                       Bound a caller's wait without cancelling shared work
 lib/sellers-json.js                sellers.json fetch + in-memory LRU/TTL cache
 lib/ortb.js                        Bid-request origin/schain extraction (site/app/dooh)
 lib/app-domain.js                  App developer-domain resolution (store listing, overrides)
@@ -221,8 +234,8 @@ public/app.js                      ads.txt form handling and result rendering (v
 public/ortb-panel.js               Bid-request paste/upload panel and chain-audit result rendering
 public/bid-request-extract.js      Client-side reduction of a pasted bid request to allowed fields
 public/style.css                   Styles
-test/                              134 tests across ten files (node --test) covering every lib/ module
-                                    plus route-level tests for /api/validate and /api/audit-chain
+test/                              162 tests across twelve files (node --test), including route,
+                                    audit-budget and frontend request-lifecycle regressions
 ```
 
 ## License

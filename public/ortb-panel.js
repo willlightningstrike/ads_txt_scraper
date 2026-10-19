@@ -1,5 +1,5 @@
 import { reduceBidRequest } from "/bid-request-extract.js";
-import { escapeHtml, setLatestPayload, setLoading } from "/app.js";
+import { escapeHtml, setLatestPayload, startRequest, isCurrentRequest, finishRequest, describeFailure } from "/app.js";
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 
@@ -14,7 +14,6 @@ const input = document.getElementById("ortb-input");
 const fileInput = document.getElementById("ortb-file");
 const extractCard = document.getElementById("ortb-extract");
 const message = document.getElementById("ortb-message");
-const submitButton = document.getElementById("ortb-submit");
 
 fileInput.addEventListener("change", async () => {
   const file = fileInput.files && fileInput.files[0];
@@ -296,15 +295,7 @@ form.addEventListener("submit", async (event) => {
   }
 
   setMessage("Auditing...");
-  setLoading(true);
-  setLatestPayload(null);
-  submitButton.disabled = true;
-
-  // Backstops the wall-clock cap the server now enforces on the walk itself
-  // (AUDIT_BUDGET_MS). Without this, a hung connection could leave the panel stuck on
-  // "Auditing..." indefinitely with no way to submit again.
-  const controller = new AbortController();
-  const deadline = setTimeout(() => controller.abort(), CLIENT_TIMEOUT_MS);
+  const request = startRequest(CLIENT_TIMEOUT_MS, "Audit");
 
   try {
     const response = await fetch("/api/audit-chain", {
@@ -314,10 +305,12 @@ form.addEventListener("submit", async (event) => {
         bidRequest: reduced,
         ...(getOverride() ? { originDomainOverride: getOverride() } : {})
       }),
-      signal: controller.signal
+      signal: request.controller.signal
     });
 
     const payload = await response.json();
+    if (!isCurrentRequest(request)) return;
+    request.controller.signal.throwIfAborted();
 
     // A request with no schain has nothing to audit, so hand the user to the existing
     // two-field form rather than leaving them at a dead end. That form takes a full URL
@@ -342,19 +335,12 @@ form.addEventListener("submit", async (event) => {
     renderChainResults(payload);
     setMessage("Audit complete.", "success");
   } catch (error) {
-    if (error.name === "AbortError") {
-      setMessage(`No response after ${Math.round(CLIENT_TIMEOUT_MS / 1000)} seconds. The server may be unreachable.`, "error");
-    } else {
-      setMessage(error.message || "Audit failed.", "error");
+    if (isCurrentRequest(request)) {
+      setMessage(describeFailure(error, request), request.reason === "cancelled" ? "neutral" : "error");
     }
   } finally {
-    clearTimeout(deadline);
-    submitButton.disabled = false;
-    setLoading(false);
-    // setLoading(true) above hid both the results panel and the empty state. On success
-    // renderChainResults unhides the results panel; on any failure path neither was ever
-    // unhidden, which would otherwise leave the panel blank instead of back at rest.
-    if (resultsPanel.hidden) {
+    // Only the current request owns this shared surface, including error cleanup.
+    if (finishRequest(request) && resultsPanel.hidden) {
       emptyState.hidden = false;
     }
   }
@@ -381,22 +367,17 @@ function renderChainResults(payload) {
     </div>
   `).join("");
 
-  // A non-pass verdict with firstFailedHop null means no WALKED hop itself failed — a
-  // chain-level check did instead (e.g. complete_flag_contradicted, or the server's own
-  // audit_budget_exceeded truncation guard). That covers both verdict "broken" (a
-  // chain-level check earned FAIL outright) and "unverifiable" (the truncation guard
-  // downgrades to this precisely because the unwalked hops are genuinely not-knowable,
-  // not because anything walked was found broken). Either way the generic "could not be
-  // fully verified" copy would bury the actual finding, so surface the failing check's
-  // own message instead of gating this on a specific verdict string.
+  // Surface a known failure before explaining incomplete evidence. A skipped
+  // chain-level check (truncation, timeout or missing completeness) prevents a pass.
   const firstFailedChainCheck = payload.chainChecks.find((check) => check.status === "fail");
+  const firstIncompleteChainCheck = payload.chainChecks.find((check) => check.status === "skip");
   const banner = payload.verdict === "pass"
     ? "Chain verified end to end"
     : payload.firstFailedHop !== null
       ? `Chain broken at hop ${payload.firstFailedHop + 1} of ${payload.summary.hops}`
       : firstFailedChainCheck
         ? firstFailedChainCheck.message
-        : "Chain could not be fully verified";
+        : firstIncompleteChainCheck?.message || "Chain could not be fully verified";
 
   resultsMeta.innerHTML = `
     <p class="chain-verdict chain-verdict--${escapeHtml(payload.verdict)}">${escapeHtml(banner)}</p>

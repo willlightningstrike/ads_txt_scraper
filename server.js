@@ -22,15 +22,13 @@ const { fetchSellersJson, resolveSellersJsonTarget } = require("./lib/sellers-js
 const { extractBidRequest } = require("./lib/ortb");
 const { resolveAppDomain } = require("./lib/app-domain");
 const { auditChain } = require("./lib/chain-audit");
+const { awaitWithSignal } = require("./lib/abort");
 
 const app = express();
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = process.env.PORT || 3000;
 const MAX_CONCURRENT_LOOKUPS = Number(process.env.MAX_CONCURRENT_LOOKUPS || 6);
-// MAX_SCHAIN_NODES bounds the walk's node COUNT, not its DURATION: the walk is
-// sequential and each hop can spend up to REQUEST_TIMEOUT_MS per redirect hop (up to 5
-// requests per hop), so worst case without this is far larger than any single
-// REQUEST_TIMEOUT_MS. This caps the whole /api/audit-chain walk's wall-clock time.
+// One deadline covers resolution, authorization files, and the entire chain walk.
 const AUDIT_BUDGET_MS = Number(process.env.AUDIT_BUDGET_MS || 120_000);
 
 // No CORS middleware: the frontend is served from this same origin, so allowing
@@ -120,6 +118,9 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
   }
 
   const controller = new AbortController();
+  const budget = new AbortController();
+  const deadline = setTimeout(() => budget.abort(new Error("Audit time budget exceeded.")), AUDIT_BUDGET_MS);
+  const signal = AbortSignal.any([controller.signal, budget.signal]);
   res.on("close", () => {
     if (!res.writableEnded) {
       controller.abort();
@@ -139,7 +140,7 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
 
     const resolved = override
       ? { domain: override, resolvedFrom: "user" }
-      : await resolveAppDomain(normalized.origin, {});
+      : await awaitWithSignal(resolveAppDomain(normalized.origin, { signal }), signal);
 
     if (!resolved.domain) {
       return res.status(422).json({
@@ -150,14 +151,16 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
     }
 
     const origin = { ...normalized.origin, ...resolved };
-    const adsTarget = await validateExternalUrl(`https://${origin.domain}/${origin.file}`);
+    const adsTarget = await awaitWithSignal(validateExternalUrl(`https://${origin.domain}/${origin.file}`), signal);
     // origin.domain may still carry a raw user-supplied override (e.g. one with a stray
     // path segment); adsTarget.hostname is what was actually validated and fetched, so
     // the reported origin must match the file that was actually read, not the raw input.
     origin.domain = adsTarget.hostname;
     const ownerFile = `${adsTarget.hostname}/${origin.file}`;
-    const ownerText = await fetchText(adsTarget, controller.signal);
-    const adsEntries = tagAdsEntries(parseAdsTxt(ownerText), ownerFile);
+    const ownerText = await awaitWithSignal(fetchText(adsTarget, signal), signal);
+    const ownerVariables = parseAdsTxtVariables(ownerText);
+    const ownerDomain = normalizeHostname(ownerVariables.ownerdomain?.[0]) || adsTarget.hostname;
+    const adsEntries = tagAdsEntries(parseAdsTxt(ownerText), ownerFile, ownerDomain);
     const partnerChecks = [];
     let partnerSource = null;
 
@@ -168,7 +171,7 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
     // UNION of both files' entries, so a seller declared by either file passes.
     if (origin.inventoryPartnerDomain) {
       const partner = origin.inventoryPartnerDomain;
-      const declared = (parseAdsTxtVariables(ownerText).inventorypartnerdomain || [])
+      const declared = (ownerVariables.inventorypartnerdomain || [])
         .map((value) => normalizeHostname(value))
         .includes(partner);
 
@@ -181,13 +184,14 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
       }
 
       try {
-        const partnerTarget = await validateExternalUrl(`https://${partner}/${origin.file}`);
-        const partnerFile = `${partnerTarget.hostname}/${origin.file}`;
-        const partnerText = await fetchText(partnerTarget, controller.signal);
-        adsEntries.push(...tagAdsEntries(parseAdsTxt(partnerText), partnerFile));
+        const partnerTarget = await awaitWithSignal(validateExternalUrl(`https://${partner}/ads.txt`), signal);
+        const partnerFile = `${partnerTarget.hostname}/ads.txt`;
+        const partnerText = await awaitWithSignal(fetchText(partnerTarget, signal), signal);
+        const partnerOwner = normalizeHostname(parseAdsTxtVariables(partnerText).ownerdomain?.[0]) || partnerTarget.hostname;
+        adsEntries.push(...tagAdsEntries(parseAdsTxt(partnerText), partnerFile, partnerOwner));
         partnerSource = { kind: "ads-txt", label: partnerFile, url: `https://${partnerFile}` };
       } catch (error) {
-        if (controller.signal.aborted) {
+        if (signal.aborted) {
           throw error;
         }
         // The declaration check above is the security control; a partner file that
@@ -195,7 +199,7 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
         partnerChecks.push({
           code: "inventory_partner_unreachable",
           status: "warn",
-          message: `The inventory partner file https://${partner}/${origin.file} could not be fetched (${error.message}). The supply chain was checked against ${ownerFile} only.`
+          message: `The inventory partner file https://${partner}/ads.txt could not be fetched (${error.message}). The supply chain was checked against ${ownerFile} only.`
         });
       }
     }
@@ -207,10 +211,7 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
         loadSellers: fetchSellersJson,
         originDomain: adsTarget.hostname,
         chainChecks: partnerChecks,
-        // Combined so either the client disconnecting or the audit simply taking too
-        // long stops the walk between hops; auditChain already checks signal?.aborted
-        // there and returns whatever partial result it has so far.
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(AUDIT_BUDGET_MS)])
+        signal
       }
     );
 
@@ -223,16 +224,14 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
       result.sources.splice(1, 0, partnerSource);
     }
 
-    // The signal passed to auditChain is a union of controller.signal (checked above)
-    // and an AUDIT_BUDGET_MS timeout that is NOT controller.signal, so a budget-expired
-    // walk sails past that check and would otherwise be serialized as a normal, complete
-    // result — including "pass" when nothing beyond the walked prefix was ever checked.
-    if (result.summary.hops < normalized.nodes.length) {
-      result.verdict = "unverifiable";
+    if (budget.signal.aborted) {
+      // A timed-out final hop can be present in the result but not fully checked.
+      // Incomplete evidence must not erase a failure established before the timeout.
+      if (result.verdict !== "broken") result.verdict = "unverifiable";
       result.chainChecks.push({
         code: "audit_budget_exceeded",
-        status: "fail",
-        message: `The audit stopped after ${result.summary.hops} of ${normalized.nodes.length} hops because it exceeded its time budget. The remaining hops were not checked.`
+        status: "skip",
+        message: `The audit exceeded its time budget after reaching ${result.summary.hops} of ${normalized.nodes.length} hops. Pending and remaining checks were not completed.`
       });
     }
 
@@ -242,9 +241,15 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
       return;
     }
 
+    if (budget.signal.aborted) {
+      return res.status(504).json({ reason: "audit_budget_exceeded", error: "The audit exceeded its time budget while resolving the origin or fetching authorization files." });
+    }
+
     return res.status(error.statusCode || 500).json({
       error: error.message || "Audit failed."
     });
+  } finally {
+    clearTimeout(deadline);
   }
 });
 
@@ -269,8 +274,8 @@ if (require.main === module) {
 
 // Entries from two ads.txt files are audited together; the tag lets a hop say which
 // file declared it, since line numbers alone collide across files.
-function tagAdsEntries(entries, sourceFile) {
-  return entries.map((entry) => ({ ...entry, sourceFile }));
+function tagAdsEntries(entries, sourceFile, ownerDomain) {
+  return entries.map((entry) => ({ ...entry, sourceFile, ownerDomain }));
 }
 
 async function mapWithConcurrency(items, limit, mapper, signal = null) {
@@ -323,7 +328,7 @@ async function validateEntry(entry, publisherDomain) {
       message: validation.message,
       seller: {
         sellerId: String(seller.seller_id || ""),
-        name: seller.name || "Unknown seller",
+        name: typeof seller.name === "string" && seller.name.trim() ? seller.name.trim() : "Unknown seller",
         sellerType,
         domain: sellerDomain,
         isConfidential: confidential,

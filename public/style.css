@@ -602,8 +602,8 @@ button:disabled {
   font-size: 0.85rem;
 }
 
-/* A chainChecks entry is a "fail" or a "warn" — a warn is a surfaced observation that
-   deliberately does not change the chain verdict, so it must never read like an error. */
+/* Warnings are metadata observations; skipped checks indicate incomplete evidence.
+   Both remain visually distinct from a confirmed failure. */
 .chain-check {
   margin: 6px 0 0;
   font-size: 0.85rem;
@@ -613,7 +613,8 @@ button:disabled {
   color: var(--danger);
 }
 
-.chain-check--warn {
+.chain-check--warn,
+.chain-check--skip {
   color: var(--warn);
 }
 
