@@ -37,7 +37,7 @@ test.afterEach(() => {
   dns.promises.lookup = realDnsLookup;
 });
 
-const STUBBED_HOSTNAMES = new Set(["dailynews.example", "exchange-a.com", "partner.example"]);
+const STUBBED_HOSTNAMES = new Set(["dailynews.example", "exchange-a.com", "partner.example", "www.amazon.com", "tubitv.com"]);
 
 // Stubs the outbound fetches only. axios.post is untouched, so the test client still works.
 // dailynews.example (RFC 2606 reserved) and exchange-a.com (unregistered) never resolve
@@ -138,6 +138,21 @@ test("originDomainOverride supplies the missing app domain", async () => {
   assert.equal(response.status, 200);
   assert.equal(response.data.origin.domain, "dailynews.example");
   assert.equal(response.data.origin.resolvedFrom, "user");
+});
+
+test("the Fire TV Tubi request audits app-ads.txt without a manual domain", async () => {
+  stubOutbound({ files: { "https://tubitv.com/app-ads.txt": ADS_TXT }, sellerDomain: "tubitv.com", failHosts: ["www.amazon.com"] });
+  const response = await axios.post(`${baseUrl}/api/audit-chain`, {
+    bidRequest: {
+      app: { bundle: "B075NTHVJW", storeurl: "https://www.amazon.com/Tubi-Inc/dp/B075NTHVJW/" },
+      source: { schain: SCHAIN }
+    }
+  }, { validateStatus: () => true });
+  assert.equal(response.status, 200);
+  assert.equal(response.data.origin.domain, "tubitv.com");
+  assert.equal(response.data.origin.resolvedFrom, "known-map");
+  assert.equal(response.data.origin.file, "app-ads.txt");
+  assert.equal(response.data.verdict, "pass");
 });
 
 test("origin.domain reports the domain actually audited, not the raw override", async () => {

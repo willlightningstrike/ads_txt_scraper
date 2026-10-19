@@ -249,3 +249,108 @@ test("an http:// store URL is fetched over https", async () => {
 
   assert.deepEqual(fetched, ["https://channelstore.roku.com/details/151908"]);
 });
+
+// Tubi's own devices page links this ASIN, and tubitv.com serves app-ads.txt.
+// Amazon may return a successful HTTP response containing only its shopping gate.
+const TUBI_STORE_URL = "https://www.amazon.com/Tubi-Inc/dp/B075NTHVJW/";
+const AMAZON_GATE = '<html><title>Amazon.com</title><form action="/errors_page/validateCaptcha">Continue shopping</form></html>';
+
+test("existing CTV package mappings still resolve with a blocked Amazon listing", async () => {
+  const itunes = itunesSpy();
+  const result = await resolveAppDomain({ kind: "app", bundle: "tv.pluto.android", storeurl: "https://www.amazon.com/dp/B00KDSGIPK" }, {
+    lookupItunes: itunes.lookup, lookupStorePage: async () => AMAZON_GATE
+  });
+  assert.deepEqual(result, { domain: "pluto.tv", resolvedFrom: "known-map" });
+  assert.deepEqual(itunes.calls, []);
+});
+
+test("the supplied Fire TV request resolves Tubi when Amazon returns its shopping gate", async () => {
+  const itunes = itunesSpy();
+  const result = await resolveAppDomain(
+    { kind: "app", bundle: "B075NTHVJW", storeurl: TUBI_STORE_URL },
+    { lookupItunes: itunes.lookup, lookupStorePage: async () => AMAZON_GATE }
+  );
+  assert.deepEqual(result, { domain: "tubitv.com", resolvedFrom: "known-map" });
+  assert.deepEqual(itunes.calls, []);
+});
+
+test("a failed Amazon request can use a verified ASIN fallback", async () => {
+  const result = await resolveAppDomain(
+    { kind: "app", bundle: "B075NTHVJW", storeurl: TUBI_STORE_URL },
+    { lookupStorePage: async () => { throw new Error("HTTP 503"); } }
+  );
+  assert.deepEqual(result, { domain: "tubitv.com", resolvedFrom: "known-map" });
+});
+
+test("a lowercase Fire TV bundle alone is looked up on Amazon, not Apple", async () => {
+  const itunes = itunesSpy();
+  const fetched = [];
+  const result = await resolveAppDomain({ kind: "app", bundle: "b012345678" }, {
+    lookupItunes: itunes.lookup,
+    lookupStorePage: async (url) => {
+      fetched.push(url);
+      return '<body><meta name="appstore:developer_url" content="https://developer.example/"></body>';
+    }
+  });
+  assert.deepEqual(result, { domain: "developer.example", resolvedFrom: "store-listing" });
+  assert.deepEqual(fetched, ["https://www.amazon.com/dp/B012345678"]);
+  assert.deepEqual(itunes.calls, []);
+});
+
+test("a known lowercase ASIN alone still resolves when its listing is blocked", async () => {
+  const result = await resolveAppDomain({ kind: "app", bundle: "b075nthvjw" }, {
+    lookupItunes: async () => null, lookupStorePage: async () => AMAZON_GATE
+  });
+  assert.deepEqual(result, { domain: "tubitv.com", resolvedFrom: "known-map" });
+});
+
+test("Amazon product and deep-link URLs supply the ASIN without a bundle", async () => {
+  for (const storeurl of [TUBI_STORE_URL, "https://www.amazon.com/dp/b075nthvjw", "https://www.amazon.com/gp/product/B075NTHVJW/ref=test", "http://www.amazon.com/gp/mas/dl/android?asin=B075NTHVJW"]) {
+    const itunes = itunesSpy();
+    const result = await resolveAppDomain({ kind: "app", storeurl }, {
+      lookupItunes: itunes.lookup, lookupStorePage: async () => AMAZON_GATE
+    });
+    assert.deepEqual(result, { domain: "tubitv.com", resolvedFrom: "known-map" }, storeurl);
+    assert.deepEqual(itunes.calls, []);
+  }
+});
+
+test("live Amazon developer metadata takes precedence over the verified fallback", async () => {
+  const result = await resolveAppDomain({ kind: "app", bundle: "B075NTHVJW", storeurl: TUBI_STORE_URL }, {
+    lookupStorePage: async () => '<meta name="appstore:developer_url" content="https://new-developer.example/">'
+  });
+  assert.deepEqual(result, { domain: "new-developer.example", resolvedFrom: "store-listing" });
+});
+
+test("an unknown ASIN without a store URL never falls through to Apple", async () => {
+  const itunes = itunesSpy();
+  const result = await resolveAppDomain({ kind: "app", bundle: "B012345678" }, {
+    lookupItunes: itunes.lookup, lookupStorePage: async () => AMAZON_GATE
+  });
+  assert.deepEqual(result, { domain: null, resolvedFrom: null });
+  assert.deepEqual(itunes.calls, []);
+});
+
+test("conflicting Amazon bundle and listing ASINs cannot select either app's domain", async () => {
+  const result = await resolveAppDomain({ kind: "app", bundle: "B012345678", storeurl: TUBI_STORE_URL }, {
+    lookupStorePage: async () => '<meta name="appstore:developer_url" content="tubitv.com">'
+  });
+  assert.deepEqual(result, { domain: null, resolvedFrom: null });
+});
+
+test("a Fire TV fallback is not applied to another store or a lookalike Amazon host", async () => {
+  for (const storeurl of ["https://amazon.com.evil.test/dp/B075NTHVJW", "https://notamazon.com/dp/B075NTHVJW", "https://channelstore.roku.com/details/B075NTHVJW", "https://www.amazon.com/search?asin=B075NTHVJW"]) {
+    const result = await resolveAppDomain({ kind: "app", bundle: "B075NTHVJW", storeurl }, {
+      lookupItunes: async () => null, lookupStorePage: async () => AMAZON_GATE
+    });
+    assert.deepEqual(result, { domain: null, resolvedFrom: null }, storeurl);
+  }
+});
+
+test("cancelling an Amazon lookup does not return a mapped success", async () => {
+  const controller = new AbortController();
+  await assert.rejects(resolveAppDomain({ kind: "app", bundle: "B075NTHVJW", storeurl: TUBI_STORE_URL }, {
+    signal: controller.signal,
+    lookupStorePage: async () => { controller.abort(new Error("cancelled")); return AMAZON_GATE; }
+  }), /cancelled/);
+});

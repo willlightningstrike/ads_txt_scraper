@@ -133,7 +133,7 @@ function renderExtractCard(reduced) {
   // When the store URL names a store the server resolves on its own, a missing app.domain
   // is not something the user has to supply. This only shapes the prompt: the server
   // still decides, and a failed lookup reopens the card at the field (submit handler).
-  const autoStore = kind === "app" && !domain ? autoResolvingStore(app.storeurl) : null;
+  const autoStore = kind === "app" && !domain ? autoResolvingStore(app.storeurl, app.bundle) : null;
   const needsInput = !domain && !autoStore;
   const file = kind === "app" ? "app-ads.txt" : "ads.txt";
   const inventoryLabel = kind === "app" ? "App" : kind === "dooh" ? "DOOH" : "Site";
@@ -143,7 +143,7 @@ function renderExtractCard(reduced) {
     <details class="extract-card__details" ${needsInput ? "open" : ""}>
       <summary>Extracted from this request${needsInput
         ? " — 1 needs input"
-        : autoStore ? ` — developer domain from the ${escapeHtml(autoStore)} listing` : ""}</summary>
+        : autoStore ? ` — automatic ${escapeHtml(autoStore)} developer-domain lookup` : ""}</summary>
       <dl class="extract-card__rows">
         <dt>Inventory</dt><dd>${escapeHtml(inventoryLabel)}</dd>
         ${kind === "app"
@@ -170,17 +170,19 @@ function updateResolvedTarget(domainValue, file, target) {
   target.textContent = `https://${domainValue || "<domain>"}/${file}`;
 }
 
-// Stores whose developer domain lib/app-domain.js resolves server-side, matched the same
-// way (exact or true subdomain). Amazon is deliberately absent: its listings publish the
-// tag but turn away server requests, so a Fire TV app still needs the domain typed in.
+// Mirrors server store recognition for the prompt only; the server resolves the domain.
 const AUTO_RESOLVING_STORES = [
   ["App Store", ["apps.apple.com", "itunes.apple.com"]],
   ["Roku", ["channelstore.roku.com"]],
   ["LG", ["lgappstv.com"]],
-  ["Samsung", ["samsung.com"]]
+  ["Samsung", ["samsung.com"]],
+  ["Amazon Fire TV", ["amazon.com"]]
 ];
 
-function autoResolvingStore(storeurl) {
+function autoResolvingStore(storeurl, bundle) {
+  if (!storeurl && typeof bundle === "string" && /^B[A-Z0-9]{9}$/i.test(bundle.trim())) {
+    return "Amazon Fire TV";
+  }
   let host;
   try {
     host = new URL(String(storeurl)).hostname.toLowerCase();
@@ -213,7 +215,9 @@ function originPrompt(kind, file, storeurl, autoStore = null) {
       </label>
       <p class="extract-card__hint">
         ${autoStore
-          ? `Looked up automatically from the ${escapeHtml(autoStore)} listing. Enter a domain only to override it, and we will fetch`
+          ? autoStore === "Amazon Fire TV"
+            ? "We will try the Amazon listing, then a verified app mapping if available. If neither resolves the app, enter its developer domain. We will fetch"
+            : `Looked up automatically from the ${escapeHtml(autoStore)} listing. Enter a domain only to override it, and we will fetch`
           : `Not in the bid request. ${escapeHtml(file)} ${escapeHtml(explanation)}. Enter the domain and we will fetch`}
         <code id="ortb-resolved-target">https://&lt;domain&gt;/${escapeHtml(file)}</code>.
         ${storeLink}

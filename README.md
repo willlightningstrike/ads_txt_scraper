@@ -67,12 +67,37 @@ sellers.json fetch without cancelling it for other callers. Both forms share one
 request, and Cancel stops whichever operation is running.
 
 For app inventory, the server works out where `app-ads.txt` lives in this order:
-`app.domain` from the bid request; a small curated map; then the store named by
-`app.storeurl` — Apple via its lookup API (numeric App Store IDs and reverse-DNS bundle
-IDs are both handled), and Roku, LG and Samsung via the IAB
-`<meta name="appstore:developer_url">` tag their listings publish. Amazon's listings carry
-the same tag but turn away server-side requests, so Fire TV apps need `app.domain` or a
-domain entered by hand. A bundle is only ever looked up in the store its `storeurl` names.
+`app.domain` from the bid request; a small curated map for CTV package IDs; then the store
+named by `app.storeurl` — Apple via its lookup API (numeric App Store IDs and reverse-DNS
+bundle IDs are both handled), and Roku, LG, Samsung and Amazon via the IAB
+`<meta name="appstore:developer_url">` tag their listings publish. Amazon ASINs use the
+Amazon path even without a store URL, and accept upper- or lowercase IDs. Product URLs
+(`/dp/ASIN`, `/gp/product/ASIN`) and Amazon's web deep links
+(`/gp/mas/dl/android?asin=ASIN`) are supported on `amazon.com`.
+
+Amazon can return a shopping gate or an error instead of listing metadata. After trying
+the listing, the resolver uses a verified ASIN-to-domain fallback when one exists;
+currently Tubi (`B075NTHVJW`) maps to `tubitv.com`. This association was checked against
+[Tubi's own devices page](https://tubitv.com/static/devices) and its live `app-ads.txt` on
+2026-10-19. Live listing metadata takes precedence over the fallback. Unknown blocked
+apps still need `app.domain` or the manual developer-domain field. Conflicting ASINs in
+the bundle and listing require a manual domain; they cannot silently select either app.
+
+For example, include both fields inside the `app` object of the full bid request:
+
+```json
+{
+  "app": {
+    "bundle": "B075NTHVJW",
+    "storeurl": "https://www.amazon.com/Tubi-Inc/dp/B075NTHVJW/"
+  }
+}
+```
+
+This resolves to `https://tubitv.com/app-ads.txt`. Supply-chain auditing still requires
+the request's `source.schain` or `source.ext.schain`; the app fragment alone has no chain
+to audit. The Fire TV resolver never sends an ASIN to Apple's lookup, and an explicit
+store URL takes precedence over guessing the store from the bundle's shape.
 
 If a bid request has no supply chain to audit, or the app's developer domain can't be
 resolved automatically, the panel asks for what it needs (or hands you back to the
@@ -137,7 +162,7 @@ If the seller ID does not appear anywhere in the `ads.txt` file, the report says
 npm test
 ```
 
-The suite runs on Node's built-in `node --test` runner and currently has 162 tests across twelve files, covering the SSRF/URL-validation layer (private IP detection, IPv6 handling, DNS pinning), ads.txt and sellers.json parsing, the `sellers.json` LRU/TTL cache, OpenRTB bid-request extraction and supply-chain auditing, app-developer-domain resolution, route-level tests for both APIs, audit deadlines, and frontend cancellation and overlapping requests.
+The suite runs on Node's built-in `node --test` runner and currently has 176 tests across twelve files, covering the SSRF/URL-validation layer (private IP detection, IPv6 handling, DNS pinning), ads.txt and sellers.json parsing, the `sellers.json` LRU/TTL cache, OpenRTB bid-request extraction and supply-chain auditing, app-developer-domain resolution (including Fire TV ASINs and blocked Amazon listings), route-level tests for both APIs, audit deadlines, and frontend cancellation and overlapping requests.
 
 ## Configuration
 
@@ -234,7 +259,7 @@ public/app.js                      ads.txt form handling and result rendering (v
 public/ortb-panel.js               Bid-request paste/upload panel and chain-audit result rendering
 public/bid-request-extract.js      Client-side reduction of a pasted bid request to allowed fields
 public/style.css                   Styles
-test/                              162 tests across twelve files (node --test), including route,
+test/                              176 tests across twelve files (node --test), including route,
                                     audit-budget and frontend request-lifecycle regressions
 ```
 

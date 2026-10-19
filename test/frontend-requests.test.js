@@ -125,3 +125,20 @@ test("late audit success cannot replace a newer validation or its copy payload",
   assert.equal(el("results-meta").innerHTML, displayed);
   assert.equal(el("copy-json-button").hidden, false);
 });
+
+test("Fire TV listings offer automatic resolution with an optional domain override", async (t) => {
+  const { el } = await page(t);
+  el("ortb-input").value = JSON.stringify({ app: { bundle: "B075NTHVJW", storeurl: "https://www.amazon.com/Tubi-Inc/dp/B075NTHVJW/" } });
+  el("ortb-input").listeners.input();
+  assert.match(el("ortb-extract").innerHTML, /Fire TV/);
+  assert.match(el("ortb-extract").innerHTML, /Developer domain \(optional\)/);
+  assert.doesNotMatch(el("ortb-extract").innerHTML, /1 needs input/);
+});
+
+test("a Fire TV ASIN without a store URL gets the same automatic-resolution prompt", async (t) => {
+  const { el } = await page(t);
+  el("ortb-input").value = JSON.stringify({ app: { bundle: "b075nthvjw" } });
+  el("ortb-input").listeners.input();
+  assert.match(el("ortb-extract").innerHTML, /Fire TV/);
+  assert.match(el("ortb-extract").innerHTML, /Developer domain \(optional\)/);
+});
