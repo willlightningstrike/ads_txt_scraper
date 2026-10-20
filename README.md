@@ -90,6 +90,15 @@ the bundle and listing require a manual domain; they cannot silently select eith
 When no fallback is available, the manual-domain prompt explains recognized Amazon
 shopping/verification pages and oversized listings separately.
 
+LG's Philo listing (`appId=1244756`) leaves the developer metadata empty, including
+the `devUrl` in LG's listing API. A verified LG-only fallback maps that listing to
+`philo.com`; the listing identifies Philo, Inc, and
+[`philo.com/app-ads.txt`](https://philo.com/app-ads.txt) redirects to Philo's published
+file with `OWNERDOMAIN=philo.com` (checked 2026-10-20). Live metadata takes precedence.
+The fallback requires a valid LG detail URL with one `appId`; a bare numeric bundle,
+another store, or conflicting numeric bundle/listing IDs cannot select it. Other LG
+apps without developer metadata still need a manual domain.
+
 For example, include both fields inside the `app` object of the full bid request:
 
 ```json
@@ -169,7 +178,7 @@ If the seller ID does not appear anywhere in the `ads.txt` file, the report says
 npm test
 ```
 
-The suite runs on Node's built-in `node --test` runner and currently has 192 tests across thirteen files, covering the SSRF/URL-validation layer (private IP detection, IPv6 handling, DNS pinning), ads.txt and sellers.json parsing, the `sellers.json` LRU/TTL cache, OpenRTB bid-request extraction and supply-chain auditing, app-developer-domain resolution (including Fire TV ASINs, large store pages, decompressed download limits and blocked Amazon listings), route-level tests for both APIs, audit deadlines, and frontend cancellation and overlapping requests.
+The suite runs on Node's built-in `node --test` runner and currently has 201 tests across thirteen files, covering the SSRF/URL-validation layer (private IP detection, IPv6 handling, DNS pinning), ads.txt and sellers.json parsing, the `sellers.json` LRU/TTL cache, OpenRTB bid-request extraction and supply-chain auditing, app-developer-domain resolution (including Fire TV ASINs, the LG Philo fallback, large store pages, decompressed download limits and blocked Amazon listings), route-level tests for both APIs, audit deadlines, and frontend cancellation and overlapping requests.
 
 ## Configuration
 
@@ -269,7 +278,7 @@ public/app.js                      ads.txt form handling and result rendering (v
 public/ortb-panel.js               Bid-request paste/upload panel and chain-audit result rendering
 public/bid-request-extract.js      Client-side reduction of a pasted bid request to allowed fields
 public/style.css                   Styles
-test/                              192 tests across thirteen files (node --test), including route,
+test/                              201 tests across thirteen files (node --test), including route,
                                     audit-budget and frontend request-lifecycle regressions
 ```
 

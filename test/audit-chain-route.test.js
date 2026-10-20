@@ -37,7 +37,7 @@ test.afterEach(() => {
   dns.promises.lookup = realDnsLookup;
 });
 
-const STUBBED_HOSTNAMES = new Set(["dailynews.example", "exchange-a.com", "partner.example", "www.amazon.com", "tubitv.com"]);
+const STUBBED_HOSTNAMES = new Set(["dailynews.example", "exchange-a.com", "partner.example", "www.amazon.com", "tubitv.com", "us.lgappstv.com", "philo.com"]);
 
 // Stubs the outbound fetches only. axios.post is untouched, so the test client still works.
 // dailynews.example (RFC 2606 reserved) and exchange-a.com (unregistered) never resolve
@@ -170,6 +170,25 @@ test("the Fire TV Tubi request audits app-ads.txt without a manual domain", asyn
   }, { validateStatus: () => true });
   assert.equal(response.status, 200);
   assert.equal(response.data.origin.domain, "tubitv.com");
+  assert.equal(response.data.origin.resolvedFrom, "known-map");
+  assert.equal(response.data.origin.file, "app-ads.txt");
+  assert.equal(response.data.verdict, "pass");
+});
+
+test("LG Philo audits its verified app-ads.txt when the listing metadata is empty", async () => {
+  stubOutbound({ files: { "https://philo.com/app-ads.txt": ADS_TXT }, sellerDomain: "philo.com" });
+  const outbound = axios.get;
+  axios.get = async (url, options) => new URL(url).hostname === "us.lgappstv.com"
+    ? { status: 200, headers: {}, data: '<meta name="appstore:developer_url" content="">' }
+    : outbound(url, options);
+  const response = await axios.post(`${baseUrl}/api/audit-chain`, {
+    bidRequest: {
+      app: { bundle: "1244756", storeurl: "https://us.lgappstv.com/main/tvapp/detail?appId=1244756" },
+      source: { schain: SCHAIN }
+    }
+  }, { validateStatus: () => true });
+  assert.equal(response.status, 200);
+  assert.equal(response.data.origin.domain, "philo.com");
   assert.equal(response.data.origin.resolvedFrom, "known-map");
   assert.equal(response.data.origin.file, "app-ads.txt");
   assert.equal(response.data.verdict, "pass");

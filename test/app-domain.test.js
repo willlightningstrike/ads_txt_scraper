@@ -250,6 +250,95 @@ test("an http:// store URL is fetched over https", async () => {
   assert.deepEqual(fetched, ["https://channelstore.roku.com/details/151908"]);
 });
 
+// LG's Philo listing and retrieveAppInfo.ajax both omit devUrl (2026-10-20).
+const PHILO_LG_URL = "https://us.lgappstv.com/main/tvapp/detail?appId=1244756";
+const EMPTY_LG_METADATA = '<meta name="appstore:developer_url" content=""><meta name="appstore:bundle_id" content=""><meta name="appstore:store_id" content="">';
+
+test("the supplied LG Philo request resolves when LG omits developer metadata", async () => {
+  const itunes = itunesSpy();
+  const fetched = [];
+  const result = await resolveAppDomain({ kind: "app", bundle: "1244756", storeurl: PHILO_LG_URL }, {
+    lookupItunes: itunes.lookup,
+    lookupStorePage: async (url) => { fetched.push(url); return EMPTY_LG_METADATA; }
+  });
+  assert.deepEqual(result, { domain: "philo.com", resolvedFrom: "known-map" });
+  assert.deepEqual(fetched, [PHILO_LG_URL]);
+  assert.deepEqual(itunes.calls, []);
+});
+
+test("LG's listing ID supplies the Philo fallback without a numeric bundle", async () => {
+  for (const bundle of [null, "com.philo.lg"]) {
+    const result = await resolveAppDomain({ kind: "app", bundle, storeurl: PHILO_LG_URL }, {
+      lookupStorePage: async () => EMPTY_LG_METADATA
+    });
+    assert.deepEqual(result, { domain: "philo.com", resolvedFrom: "known-map" });
+  }
+});
+
+test("a failed LG request can use the verified Philo fallback", async () => {
+  const result = await resolveAppDomain({ kind: "app", bundle: "1244756", storeurl: PHILO_LG_URL }, {
+    lookupStorePage: async () => { throw new Error("connection reset"); }
+  });
+  assert.deepEqual(result, { domain: "philo.com", resolvedFrom: "known-map" });
+});
+
+test("live LG developer metadata takes precedence over the fallback", async () => {
+  const result = await resolveAppDomain({ kind: "app", bundle: "1244756", storeurl: PHILO_LG_URL }, {
+    lookupStorePage: async () => '<meta name="appstore:developer_url" content="https://new-developer.example">'
+  });
+  assert.deepEqual(result, { domain: "new-developer.example", resolvedFrom: "store-listing" });
+});
+
+test("conflicting numeric LG bundle and listing IDs do not resolve either app", async () => {
+  for (const [bundle, storeurl] of [
+    ["1234567", PHILO_LG_URL],
+    ["1244756", "https://us.lgappstv.com/main/tvapp/detail?appId=474301"]
+  ]) {
+    const fetched = [];
+    const result = await resolveAppDomain({ kind: "app", bundle, storeurl }, {
+      lookupStorePage: async (url) => { fetched.push(url); return LISTING.lg; }
+    });
+    assert.deepEqual(result, { domain: null, resolvedFrom: null });
+    assert.deepEqual(fetched, []);
+  }
+});
+
+test("the Philo fallback requires an unambiguous LG detail listing", async () => {
+  for (const storeurl of [
+    null,
+    "https://apps.apple.com/us/app/id1244756",
+    "https://channelstore.roku.com/details/1244756",
+    "https://us.lgappstv.com.evil.test/main/tvapp/detail?appId=1244756",
+    "https://notlgappstv.com/main/tvapp/detail?appId=1244756",
+    "https://us.lgappstv.com/main/tvapp?appId=1244756",
+    "https://us.lgappstv.com/main/tvapp/detail",
+    "https://us.lgappstv.com/main/tvapp/detail?appId=1244756&appId=474301",
+    "ftp://us.lgappstv.com/main/tvapp/detail?appId=1244756"
+  ]) {
+    const result = await resolveAppDomain({ kind: "app", bundle: "1244756", storeurl }, {
+      lookupItunes: async () => null, lookupStorePage: async () => EMPTY_LG_METADATA
+    });
+    assert.deepEqual(result, { domain: null, resolvedFrom: null }, String(storeurl));
+  }
+});
+
+test("an unknown LG app with empty metadata remains unresolved", async () => {
+  const itunes = itunesSpy();
+  const result = await resolveAppDomain({ kind: "app", bundle: "1234567", storeurl: "https://us.lgappstv.com/main/tvapp/detail?appId=1234567" }, {
+    lookupItunes: itunes.lookup, lookupStorePage: async () => EMPTY_LG_METADATA
+  });
+  assert.deepEqual(result, { domain: null, resolvedFrom: null });
+  assert.deepEqual(itunes.calls, []);
+});
+
+test("cancelling an LG lookup cannot return the Philo fallback", async () => {
+  const controller = new AbortController();
+  await assert.rejects(resolveAppDomain({ kind: "app", bundle: "1244756", storeurl: PHILO_LG_URL }, {
+    signal: controller.signal,
+    lookupStorePage: async () => { controller.abort(new Error("cancelled")); return EMPTY_LG_METADATA; }
+  }), /cancelled/);
+});
+
 // Tubi's own devices page links this ASIN, and tubitv.com serves app-ads.txt.
 // Amazon may return a successful HTTP response containing only its shopping gate.
 const TUBI_STORE_URL = "https://www.amazon.com/Tubi-Inc/dp/B075NTHVJW/";
