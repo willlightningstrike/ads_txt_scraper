@@ -75,6 +75,11 @@ Amazon path even without a store URL, and accept upper- or lowercase IDs. Produc
 (`/dp/ASIN`, `/gp/product/ASIN`) and Amazon's web deep links
 (`/gp/mas/dl/android?asin=ASIN`) are supported on `amazon.com`.
 
+Store HTML downloads allow up to 4 MiB of decompressed content, since normal Amazon
+listings exceed 1 MiB. The separate `ads.txt` and `app-ads.txt` limit remains 512 KiB.
+Pages above their download limit are rejected without retrying the same hostname's
+other addresses. Redirect validation, DNS pinning and request deadlines still apply.
+
 Amazon can return a shopping gate or an error instead of listing metadata. After trying
 the listing, the resolver uses a verified ASIN-to-domain fallback when one exists;
 currently Tubi (`B075NTHVJW`) maps to `tubitv.com`. This association was checked against
@@ -82,6 +87,8 @@ currently Tubi (`B075NTHVJW`) maps to `tubitv.com`. This association was checked
 2026-10-19. Live listing metadata takes precedence over the fallback. Unknown blocked
 apps still need `app.domain` or the manual developer-domain field. Conflicting ASINs in
 the bundle and listing require a manual domain; they cannot silently select either app.
+When no fallback is available, the manual-domain prompt explains recognized Amazon
+shopping/verification pages and oversized listings separately.
 
 For example, include both fields inside the `app` object of the full bid request:
 
@@ -162,7 +169,7 @@ If the seller ID does not appear anywhere in the `ads.txt` file, the report says
 npm test
 ```
 
-The suite runs on Node's built-in `node --test` runner and currently has 176 tests across twelve files, covering the SSRF/URL-validation layer (private IP detection, IPv6 handling, DNS pinning), ads.txt and sellers.json parsing, the `sellers.json` LRU/TTL cache, OpenRTB bid-request extraction and supply-chain auditing, app-developer-domain resolution (including Fire TV ASINs and blocked Amazon listings), route-level tests for both APIs, audit deadlines, and frontend cancellation and overlapping requests.
+The suite runs on Node's built-in `node --test` runner and currently has 192 tests across thirteen files, covering the SSRF/URL-validation layer (private IP detection, IPv6 handling, DNS pinning), ads.txt and sellers.json parsing, the `sellers.json` LRU/TTL cache, OpenRTB bid-request extraction and supply-chain auditing, app-developer-domain resolution (including Fire TV ASINs, large store pages, decompressed download limits and blocked Amazon listings), route-level tests for both APIs, audit deadlines, and frontend cancellation and overlapping requests.
 
 ## Configuration
 
@@ -223,6 +230,9 @@ curl -X POST http://localhost:3000/api/audit-chain -H "Content-Type: application
 It responds with 422 and `reason: "no_schain"` when the bid request declares no supply
 chain, or `reason: "origin_domain_required"` when the publisher/app domain couldn't be
 resolved and no override was supplied.
+Recognized store lookup failures also include `resolutionError` with a `code`
+(`amazon_challenge` or `store_page_too_large`) and a user-facing `message`; the top-level
+`error` contains that message while `reason` retains the manual-domain workflow.
 
 A health check is available at `GET /api/health`.
 
@@ -259,7 +269,7 @@ public/app.js                      ads.txt form handling and result rendering (v
 public/ortb-panel.js               Bid-request paste/upload panel and chain-audit result rendering
 public/bid-request-extract.js      Client-side reduction of a pasted bid request to allowed fields
 public/style.css                   Styles
-test/                              176 tests across twelve files (node --test), including route,
+test/                              192 tests across thirteen files (node --test), including route,
                                     audit-budget and frontend request-lifecycle regressions
 ```
 

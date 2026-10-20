@@ -145,7 +145,8 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
     if (!resolved.domain) {
       return res.status(422).json({
         reason: "origin_domain_required",
-        error: `Could not determine where ${normalized.origin.file} lives for this request.`,
+        error: resolved.resolutionError?.message || `Could not determine where ${normalized.origin.file} lives for this request.`,
+        ...(resolved.resolutionError ? { resolutionError: resolved.resolutionError } : {}),
         origin: normalized.origin
       });
     }

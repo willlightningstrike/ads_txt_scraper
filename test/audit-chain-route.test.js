@@ -140,6 +140,26 @@ test("originDomainOverride supplies the missing app domain", async () => {
   assert.equal(response.data.origin.resolvedFrom, "user");
 });
 
+for (const [name, reply, code, message] of [
+  ["Amazon challenge", () => ({ status: 200, headers: {}, data: '<form action="/errors_page/validateCaptcha">Continue shopping</form>' }), "amazon_challenge", /Amazon.*shopping or verification page/],
+  ["oversized store page", () => { throw Object.assign(new Error("maxContentLength size of 4194304 exceeded"), { code: "ERR_BAD_RESPONSE" }); }, "store_page_too_large", /4194304-byte download limit/]
+]) {
+  test(`an ${name} keeps the manual-domain workflow and explains the lookup failure`, async () => {
+    stubOutbound();
+    axios.get = async () => reply();
+    const response = await axios.post(`${baseUrl}/api/audit-chain`, {
+      bidRequest: {
+        app: { bundle: "firetv.fawesome.tv", storeurl: "https://www.amazon.com/dp/B076X8FKXP" },
+        source: { schain: SCHAIN }
+      }
+    }, { validateStatus: () => true });
+    assert.equal(response.status, 422);
+    assert.equal(response.data.reason, "origin_domain_required");
+    assert.equal(response.data.resolutionError?.code, code);
+    assert.match(response.data.error, message);
+  });
+}
+
 test("the Fire TV Tubi request audits app-ads.txt without a manual domain", async () => {
   stubOutbound({ files: { "https://tubitv.com/app-ads.txt": ADS_TXT }, sellerDomain: "tubitv.com", failHosts: ["www.amazon.com"] });
   const response = await axios.post(`${baseUrl}/api/audit-chain`, {

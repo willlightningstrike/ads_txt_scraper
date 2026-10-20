@@ -327,8 +327,35 @@ test("an unknown ASIN without a store URL never falls through to Apple", async (
   const result = await resolveAppDomain({ kind: "app", bundle: "B012345678" }, {
     lookupItunes: itunes.lookup, lookupStorePage: async () => AMAZON_GATE
   });
-  assert.deepEqual(result, { domain: null, resolvedFrom: null });
+  assert.equal(result.domain, null);
+  assert.equal(result.resolvedFrom, null);
+  assert.equal(result.resolutionError?.code, "amazon_challenge");
   assert.deepEqual(itunes.calls, []);
+});
+
+test("an Amazon shopping or verification gate is explained when no fallback exists", async () => {
+  for (const html of [AMAZON_GATE, "<html><title>Robot Check</title></html>"]) {
+    const result = await resolveAppDomain({ kind: "app", bundle: "firetv.fawesome.tv", storeurl: "https://www.amazon.com/dp/B076X8FKXP" }, {
+      lookupStorePage: async () => html
+    });
+    assert.equal(result.domain, null);
+    assert.equal(result.resolutionError?.code, "amazon_challenge");
+    assert.match(result.resolutionError.message, /Amazon.*shopping or verification page/);
+  }
+});
+
+test("ordinary shopping text is not mistaken for an Amazon challenge", async () => {
+  const result = await resolveAppDomain({ kind: "app", bundle: "B012345678" }, {
+    lookupStorePage: async () => "<html><title>App details</title><a>Continue shopping</a></html>"
+  });
+  assert.deepEqual(result, { domain: null, resolvedFrom: null });
+});
+
+test("usable Amazon metadata wins even if the page contains a challenge form", async () => {
+  const result = await resolveAppDomain({ kind: "app", bundle: "B012345678" }, {
+    lookupStorePage: async () => `${AMAZON_GATE}<meta name="appstore:developer_url" content="futuretodayinc.com">`
+  });
+  assert.deepEqual(result, { domain: "futuretodayinc.com", resolvedFrom: "store-listing" });
 });
 
 test("conflicting Amazon bundle and listing ASINs cannot select either app's domain", async () => {
@@ -343,7 +370,8 @@ test("a Fire TV fallback is not applied to another store or a lookalike Amazon h
     const result = await resolveAppDomain({ kind: "app", bundle: "B075NTHVJW", storeurl }, {
       lookupItunes: async () => null, lookupStorePage: async () => AMAZON_GATE
     });
-    assert.deepEqual(result, { domain: null, resolvedFrom: null }, storeurl);
+    assert.equal(result.domain, null, storeurl);
+    assert.equal(result.resolvedFrom, null, storeurl);
   }
 });
 
