@@ -2,6 +2,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const axios = require("axios");
 const dns = require("dns");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const { app } = require("../server");
 const { sellersCache } = require("../lib/sellers-json");
@@ -37,7 +39,7 @@ test.afterEach(() => {
   dns.promises.lookup = realDnsLookup;
 });
 
-const STUBBED_HOSTNAMES = new Set(["dailynews.example", "exchange-a.com", "partner.example", "www.amazon.com", "tubitv.com", "us.lgappstv.com", "philo.com"]);
+const STUBBED_HOSTNAMES = new Set(["dailynews.example", "exchange-a.com", "partner.example", "www.amazon.com", "tubitv.com", "us.lgappstv.com", "philo.com", "www.vizio.com", "www.paramount.com", "play.google.com", "help.philo.com", "pluto.tv"]);
 
 // Stubs the outbound fetches only. axios.post is untouched, so the test client still works.
 // dailynews.example (RFC 2606 reserved) and exchange-a.com (unregistered) never resolve
@@ -88,6 +90,9 @@ test("a site bid request is audited without an ads.txt URL", async () => {
   assert.equal(response.data.origin.domain, "dailynews.example");
   assert.equal(response.data.hops.length, 1);
   assert.equal(response.data.verdict, "pass");
+  assert.equal(response.data.discovery.store, null);
+  assert.equal(response.data.discovery.lookupAttempted, false);
+  assert.equal(response.data.discovery.fileStatus, "fetched");
 });
 
 test("a request with no schain is rejected with guidance rather than audited", async () => {
@@ -157,6 +162,10 @@ for (const [name, reply, code, message] of [
     assert.equal(response.data.reason, "origin_domain_required");
     assert.equal(response.data.resolutionError?.code, code);
     assert.match(response.data.error, message);
+    assert.equal(response.data.discovery.store, "amazon");
+    assert.equal(response.data.discovery.lookupAttempted, true);
+    assert.equal(response.data.discovery.domain, null);
+    assert.equal(response.data.discovery.fileStatus, "not_requested");
   });
 }
 
@@ -173,6 +182,11 @@ test("the Fire TV Tubi request audits app-ads.txt without a manual domain", asyn
   assert.equal(response.data.origin.resolvedFrom, "known-map");
   assert.equal(response.data.origin.file, "app-ads.txt");
   assert.equal(response.data.verdict, "pass");
+  assert.equal(response.data.discovery.store, "amazon");
+  assert.equal(response.data.discovery.lookupAttempted, true);
+  assert.equal(response.data.discovery.resolvedFrom, "known-map");
+  assert.equal(response.data.discovery.fileStatus, "fetched");
+  assert.equal(response.data.discovery.fileUrl, "https://tubitv.com/app-ads.txt");
 });
 
 test("LG Philo audits its verified app-ads.txt when the listing metadata is empty", async () => {
@@ -192,6 +206,173 @@ test("LG Philo audits its verified app-ads.txt when the listing metadata is empt
   assert.equal(response.data.origin.resolvedFrom, "known-map");
   assert.equal(response.data.origin.file, "app-ads.txt");
   assert.equal(response.data.verdict, "pass");
+  assert.equal(response.data.discovery.store, "lg");
+  assert.equal(response.data.discovery.lookupAttempted, true);
+});
+
+for (const success of [true, false]) {
+  test(`Google Play ${success ? "resolves Philo" : "reports missing metadata"} through the audit API`, async () => {
+    stubOutbound({ files: { "https://help.philo.com/app-ads.txt": "OWNERDOMAIN=philo.com\n" + ADS_TXT }, sellerDomain: "philo.com" });
+    const listing = fs.readFileSync(path.join(__dirname, "fixtures/google-play-philo.html"), "utf8");
+    const storeurl = "https://play.google.com/store/apps/details?id=com.philo.philo.google";
+    const outbound = axios.get;
+    const requested = [];
+    axios.get = async (url, options) => {
+      requested.push(url);
+      return url === storeurl
+        ? { status: 200, headers: {}, data: success ? listing : "<html>No developer metadata</html>" }
+        : outbound(url, options);
+    };
+    const response = await axios.post(`${baseUrl}/api/audit-chain`, {
+      bidRequest: { app: { bundle: "com.philo.philo.google", storeurl }, source: { schain: SCHAIN } }
+    }, { validateStatus: () => true });
+    assert.equal(response.status, success ? 200 : 422);
+    assert.equal(response.data.discovery.store, "google");
+    assert.equal(response.data.discovery.storeUrl, storeurl);
+    assert.equal(response.data.discovery.lookupAttempted, true);
+    assert.equal(requested.some((url) => url.includes("itunes.apple.com")), false);
+    if (success) {
+      assert.equal(response.data.origin.domain, "help.philo.com");
+      assert.equal(response.data.origin.resolvedFrom, "store-listing");
+      assert.equal(response.data.verdict, "pass");
+      assert.equal(response.data.discovery.fileStatus, "fetched");
+      assert.equal(response.data.discovery.fileUrl, "https://help.philo.com/app-ads.txt");
+    } else {
+      assert.equal(response.data.reason, "origin_domain_required");
+      assert.equal(response.data.discovery.domain, null);
+      assert.equal(response.data.discovery.fileStatus, "not_requested");
+      assert.deepEqual(requested, [storeurl]);
+    }
+  });
+}
+
+for (const liveMetadata of [true, false]) {
+  test(`Pluto reports Google Play checked when using ${liveMetadata ? "live metadata" : "its fallback"}`, async () => {
+    stubOutbound({ files: { "https://pluto.tv/app-ads.txt": ADS_TXT }, sellerDomain: "pluto.tv" });
+    const listing = fs.readFileSync(path.join(__dirname, "fixtures/google-play-pluto.html"), "utf8");
+    const storeurl = "https://play.google.com/store/apps/details?id=tv.pluto.android";
+    const outbound = axios.get;
+    const requested = [];
+    axios.get = async (url, options) => {
+      requested.push(url);
+      return url === storeurl
+        ? { status: 200, headers: {}, data: liveMetadata ? listing : "<html>No developer metadata</html>" }
+        : outbound(url, options);
+    };
+    const response = await axios.post(`${baseUrl}/api/audit-chain`, {
+      bidRequest: { app: { bundle: "tv.pluto.android", storeurl }, source: { schain: SCHAIN } }
+    }, { validateStatus: () => true });
+    assert.equal(response.status, 200);
+    assert.equal(requested[0], storeurl);
+    assert.equal(response.data.discovery.store, "google");
+    assert.equal(response.data.discovery.lookupAttempted, true);
+    assert.equal(response.data.discovery.resolvedFrom, liveMetadata ? "store-listing" : "known-map");
+    assert.equal(response.data.discovery.fileUrl, "https://pluto.tv/app-ads.txt");
+    assert.equal(response.data.discovery.fileStatus, "fetched");
+    assert.equal(response.data.verdict, "pass");
+  });
+}
+
+for (const [bundle, status] of [["vizio.paramountplus", 200], ["vizio.unknown", 422]]) {
+  test(`Vizio ${bundle} reports catalog discovery and authorization fetch status`, async () => {
+    stubOutbound({ files: { "https://www.paramount.com/app-ads.txt": ADS_TXT }, sellerDomain: "paramount.com" });
+    const catalog = fs.readFileSync(path.join(__dirname, "fixtures/vizio-catalog.html"), "utf8");
+    const outbound = axios.get;
+    const requested = [];
+    axios.get = async (url, options) => {
+      requested.push(url);
+      return new URL(url).hostname === "www.vizio.com"
+        ? { status: 200, headers: {}, data: catalog }
+        : outbound(url, options);
+    };
+    const storeurl = `https://www.vizio.com/en/smart-tv-apps?appId=${bundle}`;
+    const response = await axios.post(`${baseUrl}/api/audit-chain`, {
+      bidRequest: { app: { bundle, storeurl }, source: { schain: SCHAIN } }
+    }, { validateStatus: () => true });
+    assert.equal(response.status, status);
+    assert.equal(response.data.discovery.store, "vizio");
+    assert.equal(response.data.discovery.storeUrl, storeurl);
+    assert.equal(response.data.discovery.lookupAttempted, true);
+    assert.equal(requested.some((url) => url.includes("itunes.apple.com")), false);
+    if (status === 200) {
+      assert.equal(response.data.origin.domain, "www.paramount.com");
+      assert.equal(response.data.origin.resolvedFrom, "store-listing");
+      assert.equal(response.data.verdict, "pass");
+      assert.equal(response.data.discovery.fileStatus, "fetched");
+      assert.equal(response.data.discovery.fileUrl, "https://www.paramount.com/app-ads.txt");
+    } else {
+      assert.equal(response.data.reason, "origin_domain_required");
+      assert.equal(response.data.discovery.domain, null);
+      assert.equal(response.data.discovery.fileStatus, "not_requested");
+      assert.deepEqual(requested, [storeurl]);
+    }
+  });
+}
+
+test("WatchFree+ audit fetches Vizio's authorization file and reports the verified mapping", async () => {
+  stubOutbound({ files: { "https://www.vizio.com/app-ads.txt": "OWNERDOMAIN=vizio.com\n" + ADS_TXT }, sellerDomain: "vizio.com" });
+  const listing = fs.readFileSync(path.join(__dirname, "fixtures/vizio-watchfree.html"), "utf8");
+  const storeurl = "https://www.vizio.com/en/smart-tv-apps?appName=watchfree&appId=vizio.watchfree";
+  const outbound = axios.get;
+  const requested = [];
+  axios.get = async (url, options) => {
+    requested.push(url);
+    return url === storeurl ? { status: 200, headers: {}, data: listing } : outbound(url, options);
+  };
+  const response = await axios.post(`${baseUrl}/api/audit-chain`, {
+    bidRequest: { app: { bundle: "vizio.watchfree", storeurl }, source: { schain: SCHAIN } }
+  }, { validateStatus: () => true });
+  assert.equal(response.status, 200);
+  assert.equal(response.data.origin.domain, "www.vizio.com");
+  assert.equal(response.data.origin.resolvedFrom, "known-map");
+  assert.equal(response.data.verdict, "pass");
+  assert.equal(response.data.discovery.store, "vizio");
+  assert.equal(response.data.discovery.storeUrl, storeurl);
+  assert.equal(response.data.discovery.lookupAttempted, true);
+  assert.equal(response.data.discovery.fileStatus, "fetched");
+  assert.equal(response.data.discovery.fileUrl, "https://www.vizio.com/app-ads.txt");
+  assert.equal(requested.some((url) => url.includes("itunes.apple.com")), false);
+  assert.ok(requested.includes("https://www.vizio.com/app-ads.txt"));
+});
+
+test("a manual domain reports that the supplied app store was not queried", async () => {
+  stubOutbound({ sellerDomain: "tubitv.com" });
+  const response = await axios.post(`${baseUrl}/api/audit-chain`, {
+    bidRequest: { app: { bundle: "B075NTHVJW", storeurl: "https://www.amazon.com/dp/B075NTHVJW" }, source: { schain: SCHAIN } },
+    originDomainOverride: "tubitv.com"
+  });
+  assert.equal(response.data.discovery.store, "amazon");
+  assert.equal(response.data.discovery.lookupAttempted, false);
+  assert.equal(response.data.discovery.resolvedFrom, "user");
+  assert.equal(response.data.discovery.fileStatus, "fetched");
+});
+
+test("a failed authorization download retains the app store and resolved domain", async () => {
+  stubOutbound({ failHosts: ["tubitv.com", "www.amazon.com"] });
+  const response = await axios.post(`${baseUrl}/api/audit-chain`, {
+    bidRequest: { app: { bundle: "B075NTHVJW", storeurl: "https://www.amazon.com/dp/B075NTHVJW" }, source: { schain: SCHAIN } }
+  }, { validateStatus: () => true });
+  assert.equal(response.status, 502);
+  assert.equal(response.data.discovery.store, "amazon");
+  assert.equal(response.data.discovery.lookupAttempted, true);
+  assert.equal(response.data.discovery.domain, "tubitv.com");
+  assert.equal(response.data.discovery.fileStatus, "failed");
+  assert.equal(response.data.discovery.fileUrl, "https://tubitv.com/app-ads.txt");
+});
+
+test("Apple lookup discovery identifies Apple even without a store URL", async () => {
+  stubOutbound();
+  const outbound = axios.get;
+  axios.get = async (url, options) => url.startsWith("https://itunes.apple.com/lookup?")
+    ? { status: 200, headers: {}, data: JSON.stringify({ results: [{ sellerUrl: "https://dailynews.example" }] }) }
+    : outbound(url, options);
+  const response = await axios.post(`${baseUrl}/api/audit-chain`, {
+    bidRequest: { app: { bundle: "123456" }, source: { schain: SCHAIN } }
+  });
+  assert.equal(response.data.discovery.store, "apple");
+  assert.equal(response.data.discovery.lookupAttempted, true);
+  assert.equal(response.data.discovery.resolvedFrom, "itunes");
+  assert.equal(response.data.discovery.fileStatus, "fetched");
 });
 
 test("origin.domain reports the domain actually audited, not the raw override", async () => {

@@ -2,9 +2,9 @@
 
 A small web tool that verifies a publisher's declared monetization rights by cross-referencing two IAB Tech Lab transparency files: the publisher's `ads.txt` and each ad system's `sellers.json`.
 
-You give it an `ads.txt` URL and an account/seller ID. It finds every line in that `ads.txt` claiming the ID, then fetches the corresponding `sellers.json` from each ad system and checks that the two files tell the same story.
+Paste an OpenRTB bid request to discover its authorization file and audit the declared supply chain. Or use **Seller lookup** with an `ads.txt` URL and account/seller ID to compare matching declarations with each ad system's `sellers.json`.
 
-![The validator UI: a form for the ads.txt URL and seller ID, beside the validation report panel where results appear](docs/screenshot.png)
+![Supply check: a wide JSON editor, request inspector and separate app-store lookup result](docs/screenshot.jpg)
 
 ## What it checks
 
@@ -33,10 +33,21 @@ Results can be copied as JSON from the UI for use elsewhere.
 
 ## Bid request supply-chain audit
 
-A second panel audits a pasted or uploaded OpenRTB bid request instead of a bare ads.txt
+The **Bid request** workspace audits a pasted or uploaded OpenRTB bid request instead of a bare ads.txt
 URL and account ID. Paste the JSON (or drop a `.json` file up to 5 MB) and the browser
 extracts only `id`, `site`, `app`, `dooh` and `source` before sending anything to the
 server — `device`, `user`, `regs` and `imp` never leave the page.
+
+The editor formats valid JSON on paste or upload, includes line numbers, and expands to
+the full workspace width. **Format** adjusts whitespace without changing numeric IDs
+or string contents. Press **⌘/Ctrl + Enter** to audit. The request inspector identifies
+the app store and lists the request's advertising systems separately.
+
+Above the chain results, a discovery report names the store actually checked and states
+whether the authorization file was retrieved. It distinguishes store metadata, verified
+app mappings, request-supplied domains and manual overrides. Failed discovery and file
+downloads retain the store outcome; skipped lookups say **not queried**. For example,
+`lgads.tv` in a Fire TV request is a declared advertising system, not the app store.
 
 The server walks every node in the bid request's supply chain object
 (`source.ext.schain`, or `source.schain`) and, for each hop, checks:
@@ -64,21 +75,35 @@ The audit's time budget covers app resolution, authorization files and seller lo
 Expiry during preparation returns a timeout error; expiry during the chain walk returns
 the partial audit with an explicit explanation. A caller can stop waiting for a shared
 sellers.json fetch without cancelling it for other callers. Both forms share one active
-request, and Cancel stops whichever operation is running.
+request, and Cancel stops whichever operation is running. Switching tabs cancels any
+pending lookup and clears the shared report, while preserving both forms' inputs.
 
 For app inventory, the server works out where `app-ads.txt` lives in this order:
-`app.domain` from the bid request; a small curated map for CTV package IDs; then the store
-named by `app.storeurl` — Apple via its lookup API (numeric App Store IDs and reverse-DNS
-bundle IDs are both handled), and Roku, LG, Samsung and Amazon via the IAB
+`app.domain` from the bid request; then the recognized store named by `app.storeurl`;
+then a verified fallback mapping if store discovery could not resolve a domain.
+Apple uses its lookup API (numeric App Store IDs and reverse-DNS
+bundle IDs are both handled). Google Play, Roku, LG, Samsung and Amazon use the IAB
 `<meta name="appstore:developer_url">` tag their listings publish. Amazon ASINs use the
 Amazon path even without a store URL, and accept upper- or lowercase IDs. Product URLs
 (`/dp/ASIN`, `/gp/product/ASIN`) and Amazon's web deep links
 (`/gp/mas/dl/android?asin=ASIN`) are supported on `amazon.com`.
 
+For example, `tv.pluto.android` with a Google Play URL now queries Google Play before
+using its `pluto.tv` mapping. The report says **Google Play checked** and identifies
+whether live metadata or the fallback supplied the domain. Without a recognized store
+URL, curated package mappings can still resolve an app without a store lookup.
+
 Store HTML downloads allow up to 4 MiB of decompressed content, since normal Amazon
 listings exceed 1 MiB. The separate `ads.txt` and `app-ads.txt` limit remains 512 KiB.
 Pages above their download limit are rejected without retrying the same hostname's
 other addresses. Redirect validation, DNS pinning and request deadlines still apply.
+
+Google Play listings use their published developer URL, including subdomains. For
+example, `com.philo.philo.google` resolves from its Play listing to
+[`help.philo.com/app-ads.txt`](https://help.philo.com/app-ads.txt) (verified 2026-10-20).
+The inspector and report identify **Google Play**. Missing metadata or failed Play
+requests use a verified package mapping if available; otherwise they require a manual
+developer domain. They never fall through to Apple's lookup.
 
 Amazon can return a shopping gate or an error instead of listing metadata. After trying
 the listing, the resolver uses a verified ASIN-to-domain fallback when one exists;
@@ -99,6 +124,28 @@ The fallback requires a valid LG detail URL with one `appId`; a bare numeric bun
 another store, or conflicting numeric bundle/listing IDs cannot select it. Other LG
 apps without developer metadata still need a manual domain.
 
+Vizio's `/en/smart-tv-apps` page is a catalog containing metadata for many apps.
+The resolver matches the listing's `appId` and the request bundle against an entry's
+`data-app-id` / `data-bundle-id`, then reads that entry's `data-developer-url`.
+When supplied, `appName` must match too. Unknown apps, conflicting identifiers and
+ambiguous entries require a manual domain; Vizio URLs never fall through to Apple.
+The report identifies **Vizio App Catalog** as the lookup source on success or failure.
+
+For example, `vizio.paramountplus` with
+`https://www.vizio.com/en/smart-tv-apps?appName=paramountplus&appId=vizio.paramountplus`
+resolves from live catalog metadata to `https://www.paramount.com/app-ads.txt`
+(verified 2026-10-20). Vizio also publishes `vizio.paramount+` as this app's bundle alias.
+This uses the catalog entry, not a fixed Paramount+ domain mapping.
+
+WatchFree+ (`vizio.watchfree`) omits `data-developer-url`. After matching its live
+catalog entry, the resolver uses a verified Vizio-only mapping to `www.vizio.com`.
+The entry links to Vizio's WatchFree+ website, and
+[`www.vizio.com/app-ads.txt`](https://www.vizio.com/app-ads.txt) publishes
+`OWNERDOMAIN=vizio.com` (verified 2026-10-21). Live developer metadata takes precedence.
+The report says **Used a verified app mapping**. Missing entries, catalog fetch
+failures, conflicting identifiers and invalid or conflicting developer URLs remain
+unresolved; this mapping does not supply a default domain for other Vizio apps.
+
 For example, include both fields inside the `app` object of the full bid request:
 
 ```json
@@ -117,7 +164,7 @@ store URL takes precedence over guessing the store from the bundle's shape.
 
 If a bid request has no supply chain to audit, or the app's developer domain can't be
 resolved automatically, the panel asks for what it needs (or hands you back to the
-ads.txt form above, which takes a full URL and account ID).
+**Seller lookup** workspace, which takes a full URL and account ID).
 
 ## Why it needs a server
 
@@ -178,7 +225,7 @@ If the seller ID does not appear anywhere in the `ads.txt` file, the report says
 npm test
 ```
 
-The suite runs on Node's built-in `node --test` runner and currently has 201 tests across thirteen files, covering the SSRF/URL-validation layer (private IP detection, IPv6 handling, DNS pinning), ads.txt and sellers.json parsing, the `sellers.json` LRU/TTL cache, OpenRTB bid-request extraction and supply-chain auditing, app-developer-domain resolution (including Fire TV ASINs, the LG Philo fallback, large store pages, decompressed download limits and blocked Amazon listings), route-level tests for both APIs, audit deadlines, and frontend cancellation and overlapping requests.
+The suite runs on Node's built-in `node --test` runner and currently has 267 tests across fourteen files, covering the SSRF/URL-validation layer (private IP detection, IPv6 handling, DNS pinning), ads.txt and sellers.json parsing, the `sellers.json` LRU/TTL cache, OpenRTB bid-request extraction and supply-chain auditing, app-developer-domain resolution (including live store lookup precedence over package mappings, Google Play metadata, Vizio catalog entries and the WatchFree+ fallback, Fire TV ASINs, the LG Philo fallback, large store pages, decompressed download limits and blocked Amazon listings), route-level tests for both APIs, audit deadlines, lookup-outcome reporting, lossless JSON formatting, editor controls, cancellation and overlapping requests.
 
 ## Configuration
 
@@ -243,6 +290,12 @@ Recognized store lookup failures also include `resolutionError` with a `code`
 (`amazon_challenge` or `store_page_too_large`) and a user-facing `message`; the top-level
 `error` contains that message while `reason` retains the manual-domain workflow.
 
+Once the inventory origin has been extracted, success and failure responses include
+`discovery`: the identified `store` and `storeUrl`, whether `lookupAttempted`, the
+resolved `domain` and `resolvedFrom`, and the authorization `file`, `fileUrl` and
+`fileStatus` (`not_requested`, `fetching`, `fetched` or `failed`). A successful file
+fetch is separate from the supply-chain verdict; it does not imply seller authorization.
+
 A health check is available at `GET /api/health`.
 
 ## Security notes
@@ -278,7 +331,7 @@ public/app.js                      ads.txt form handling and result rendering (v
 public/ortb-panel.js               Bid-request paste/upload panel and chain-audit result rendering
 public/bid-request-extract.js      Client-side reduction of a pasted bid request to allowed fields
 public/style.css                   Styles
-test/                              201 tests across thirteen files (node --test), including route,
+test/                              267 tests across fourteen files (node --test), including route,
                                     audit-budget and frontend request-lifecycle regressions
 ```
 

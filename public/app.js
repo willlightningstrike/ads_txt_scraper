@@ -20,6 +20,50 @@ const CLIENT_TIMEOUT_MS = 60_000;
 
 let latestPayload = null;
 let inFlight = null;
+let activeMode = "bid";
+
+export function showMode(mode) {
+  if (mode !== activeMode) {
+    // Revoke ownership before aborting so late responses cannot restore the old report.
+    const previous = inFlight;
+    inFlight = null;
+    if (previous) {
+      clearTimeout(previous.deadline);
+      previous.reason = "superseded";
+      previous.controller.abort();
+    }
+    setLoading(false);
+    setLatestPayload(null);
+    showEmptyState();
+    const discovery = document.getElementById("discovery-status");
+    discovery.hidden = true;
+    discovery.innerHTML = "";
+    setFormMessage("");
+    const auditMessage = document.getElementById("ortb-message");
+    auditMessage.textContent = "";
+    auditMessage.dataset.tone = "neutral";
+    activeMode = mode;
+  }
+  for (const name of ["bid", "seller"]) {
+    const selected = name === mode;
+    document.getElementById(`${name}-workspace`).hidden = !selected;
+    const tab = document.getElementById(`${name}-tab`);
+    tab.setAttribute("aria-selected", String(selected));
+    tab.setAttribute("tabindex", selected ? "0" : "-1");
+  }
+}
+
+for (const mode of ["bid", "seller"]) {
+  const tab = document.getElementById(`${mode}-tab`);
+  tab.addEventListener("click", () => showMode(mode));
+  tab.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === "Home" ? "bid" : event.key === "End" ? "seller" : mode === "bid" ? "seller" : "bid";
+    showMode(next);
+    document.getElementById(`${next}-tab`).focus();
+  });
+}
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -60,6 +104,7 @@ form.addEventListener("submit", async (event) => {
 
     latestPayload = payload;
     renderResults(payload);
+    document.getElementById("report-title").scrollIntoView({ block: "start" });
     copyJsonButton.hidden = false;
     setFormMessage("Validation completed.", "success");
   } catch (error) {
@@ -245,6 +290,10 @@ export function setLoading(isLoading) {
   document.getElementById("ortb-submit").disabled = isLoading;
   cancelButton.hidden = !isLoading;
   loadingState.hidden = !isLoading;
+  for (const id of ["ortb-input", "ortb-file", "format-json", "ortb-origin-domain", "adsTxtUrl", "accountId"]) {
+    const control = document.getElementById(id);
+    if (control) control.disabled = isLoading;
+  }
 
   if (isLoading) {
     results.hidden = true;
@@ -262,6 +311,9 @@ export function startRequest(timeoutMs = CLIENT_TIMEOUT_MS, label = "Validation"
   }, timeoutMs);
 
   inFlight = request;
+  const discovery = document.getElementById("discovery-status");
+  discovery.hidden = true;
+  discovery.innerHTML = "";
   setLatestPayload(null);
   setLoading(true);
   return request;

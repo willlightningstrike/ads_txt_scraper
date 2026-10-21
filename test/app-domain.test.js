@@ -27,13 +27,62 @@ test("the curated map resolves a CTV bundle without any lookup", async () => {
   assert.equal(result.resolvedFrom, "known-map");
 });
 
-test("the curated map is consulted before iTunes", async () => {
+test("the curated map is consulted before iTunes when no store URL is supplied", async () => {
   const bundle = Object.keys(KNOWN_APP_DEVELOPER_DOMAINS)[0];
   const result = await resolveAppDomain({ kind: "app", domain: null, bundle }, {
     lookupItunes: neverCalled
   });
 
   assert.equal(result.resolvedFrom, "known-map");
+});
+
+const PLUTO_GOOGLE_URL = "https://play.google.com/store/apps/details?id=tv.pluto.android";
+
+for (const [store, storeurl, html, resolvedFrom] of [
+  ["google", PLUTO_GOOGLE_URL, '<meta name="appstore:developer_url" content="https://live.example/">', "store-listing"],
+  ["amazon", "https://www.amazon.com/dp/B00KDSGIPK", '<meta name="appstore:developer_url" content="https://live.example/">', "store-listing"],
+  ["vizio", "https://www.vizio.com/en/smart-tv-apps?appId=tv.pluto.android", '<div data-app-id="tv.pluto.android" data-developer-url="https://live.example/"></div>', "store-listing"],
+  ["apple", "https://apps.apple.com/app/pluto/id12345", null, "itunes"]
+]) {
+  test(`an explicit ${store} listing takes priority over Pluto's package mapping`, async () => {
+    const lookups = [], fetched = [];
+    const result = await resolveAppDomain({ kind: "app", bundle: "tv.pluto.android", storeurl }, {
+      lookupStorePage: async (url) => { fetched.push(url); return html; },
+      lookupItunes: async () => "https://live.example/",
+      onStoreLookup: (lookup) => lookups.push(lookup)
+    });
+    assert.deepEqual(result, { domain: "live.example", resolvedFrom });
+    assert.equal(lookups.length, 1);
+    assert.equal(lookups[0].store, store);
+    assert.deepEqual(fetched, store === "apple" ? [] : [storeurl]);
+  });
+}
+
+for (const failure of ["missing metadata", "fetch failure"]) {
+  test(`Pluto's package mapping is used only after a Google Play ${failure}`, async () => {
+    const fetched = [], lookups = [], apple = [];
+    const result = await resolveAppDomain({ kind: "app", bundle: "tv.pluto.android", storeurl: PLUTO_GOOGLE_URL }, {
+      lookupStorePage: async (url) => {
+        fetched.push(url);
+        if (failure === "fetch failure") throw new Error("network down");
+        return "<html>No developer URL</html>";
+      },
+      lookupItunes: async (id) => { apple.push(id); return null; },
+      onStoreLookup: (lookup) => lookups.push(lookup)
+    });
+    assert.deepEqual(result, { domain: "pluto.tv", resolvedFrom: "known-map" });
+    assert.deepEqual(fetched, [PLUTO_GOOGLE_URL]);
+    assert.deepEqual(lookups, [{ store: "google", url: PLUTO_GOOGLE_URL }]);
+    assert.deepEqual(apple, []);
+  });
+}
+
+test("cancelling Pluto's store lookup cannot return its package mapping", async () => {
+  const controller = new AbortController();
+  await assert.rejects(resolveAppDomain({ kind: "app", bundle: "tv.pluto.android", storeurl: PLUTO_GOOGLE_URL }, {
+    signal: controller.signal,
+    lookupStorePage: async () => { controller.abort(new Error("cancelled")); return "<html>No metadata</html>"; }
+  }), /cancelled/);
 });
 
 test("iTunes resolves an unmapped bundle and only its hostname is kept", async () => {
@@ -167,7 +216,7 @@ test("storeOf identifies each store by exact host or true subdomain", () => {
   assert.equal(storeOf("https://www.samsung.com/us/appstore/app/G18229011675"), "samsung");
   assert.equal(storeOf("https://www.amazon.com/dp/B07DBBTDBS"), "amazon");
   assert.equal(storeOf("https://apps.apple.com/us/app/paramount/id530168168"), "apple");
-  assert.equal(storeOf("https://play.google.com/store/apps/details?id=com.a.b"), null);
+  assert.equal(storeOf("https://play.google.com/store/apps/details?id=com.a.b"), "google");
   assert.equal(storeOf(null), null);
 });
 
@@ -176,6 +225,8 @@ test("storeOf does not trust lookalike store hosts", () => {
   assert.equal(storeOf("https://evilchannelstore.roku.com/details/1"), null);
   assert.equal(storeOf("https://notlgappstv.com/x"), null);
   assert.equal(storeOf("https://samsung.com.evil.test/us/appstore/app/G1"), null);
+  assert.equal(storeOf("https://play.google.com.evil.test/store/apps/details?id=com.a.b"), null);
+  assert.equal(storeOf("https://notplay.google.com/store/apps/details?id=com.a.b"), null);
 });
 
 test("parseDeveloperUrlMeta reads the tag as each store actually serves it", () => {
@@ -198,7 +249,11 @@ test("developerHost reduces bare hosts, scheme URLs and full file URLs to a host
   assert.equal(developerHost("not a host at all"), null);
 });
 
+const PHILO_GOOGLE_URL = "https://play.google.com/store/apps/details?id=com.philo.philo.google";
+const PHILO_GOOGLE_HTML = require("node:fs").readFileSync(require("node:path").join(__dirname, "fixtures/google-play-philo.html"), "utf8");
+
 for (const [store, app, html, expected] of [
+  ["Google Play", { bundle: "com.philo.philo.google", storeurl: PHILO_GOOGLE_URL }, PHILO_GOOGLE_HTML, "help.philo.com"],
   ["Roku", { bundle: "151908", storeurl: "https://channelstore.roku.com/details/151908" }, LISTING.roku, "therokuchannel.roku.com"],
   ["LG", { bundle: "474301", storeurl: "https://us.lgappstv.com/main/tvapp/detail?appId=474301" }, LISTING.lg, "lgchannels.com"],
   ["Samsung", { bundle: "G18229011675", storeurl: "https://www.samsung.com/us/appstore/app/G18229011675" }, LISTING.samsung, "paramount.com"]
@@ -213,6 +268,24 @@ for (const [store, app, html, expected] of [
 
     assert.deepEqual(result, { domain: expected, resolvedFrom: "store-listing" });
     assert.deepEqual(fetched, [app.storeurl]);
+    assert.deepEqual(itunes.calls, []);
+  });
+}
+
+for (const failure of ["missing metadata", "fetch failure"]) {
+  test(`Google Play ${failure} stays unresolved without querying Apple`, async () => {
+    const itunes = itunesSpy();
+    const lookedUp = [];
+    const result = await resolveAppDomain({ kind: "app", bundle: "com.philo.philo.google", storeurl: PHILO_GOOGLE_URL }, {
+      lookupItunes: itunes.lookup,
+      onStoreLookup: (lookup) => lookedUp.push(lookup),
+      lookupStorePage: async () => {
+        if (failure === "fetch failure") throw new Error("HTTP 503");
+        return '<meta name="appstore:developer_url" content="">';
+      }
+    });
+    assert.deepEqual(result, { domain: null, resolvedFrom: null });
+    assert.deepEqual(lookedUp, [{ store: "google", url: PHILO_GOOGLE_URL }]);
     assert.deepEqual(itunes.calls, []);
   });
 }
@@ -346,10 +419,12 @@ const AMAZON_GATE = '<html><title>Amazon.com</title><form action="/errors_page/v
 
 test("existing CTV package mappings still resolve with a blocked Amazon listing", async () => {
   const itunes = itunesSpy();
+  const fetched = [];
   const result = await resolveAppDomain({ kind: "app", bundle: "tv.pluto.android", storeurl: "https://www.amazon.com/dp/B00KDSGIPK" }, {
-    lookupItunes: itunes.lookup, lookupStorePage: async () => AMAZON_GATE
+    lookupItunes: itunes.lookup, lookupStorePage: async (url) => { fetched.push(url); return AMAZON_GATE; }
   });
   assert.deepEqual(result, { domain: "pluto.tv", resolvedFrom: "known-map" });
+  assert.deepEqual(fetched, ["https://www.amazon.com/dp/B00KDSGIPK"]);
   assert.deepEqual(itunes.calls, []);
 });
 

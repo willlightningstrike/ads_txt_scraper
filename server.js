@@ -20,7 +20,7 @@ const {
 } = require("./lib/http-client");
 const { fetchSellersJson, resolveSellersJsonTarget } = require("./lib/sellers-json");
 const { extractBidRequest } = require("./lib/ortb");
-const { resolveAppDomain } = require("./lib/app-domain");
+const { resolveAppDomain, storeOf } = require("./lib/app-domain");
 const { auditChain } = require("./lib/chain-audit");
 const { awaitWithSignal } = require("./lib/abort");
 
@@ -121,6 +121,7 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
   const budget = new AbortController();
   const deadline = setTimeout(() => budget.abort(new Error("Audit time budget exceeded.")), AUDIT_BUDGET_MS);
   const signal = AbortSignal.any([controller.signal, budget.signal]);
+  let discovery = null;
   res.on("close", () => {
     if (!res.writableEnded) {
       controller.abort();
@@ -129,10 +130,21 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
 
   try {
     const normalized = extractBidRequest(bidRequest);
+    discovery = {
+      store: normalized.origin.kind === "app" ? storeOf(normalized.origin.storeurl) : null,
+      storeUrl: normalized.origin.storeurl,
+      lookupAttempted: false,
+      domain: null,
+      resolvedFrom: null,
+      file: normalized.origin.file,
+      fileUrl: null,
+      fileStatus: "not_requested"
+    };
 
     if (!normalized.nodes.length) {
       return res.status(422).json({
         reason: "no_schain",
+        discovery,
         error: "This bid request declares no supply chain, so there is nothing to audit. Enter an ads.txt URL and account ID instead.",
         origin: normalized.origin
       });
@@ -140,11 +152,21 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
 
     const resolved = override
       ? { domain: override, resolvedFrom: "user" }
-      : await awaitWithSignal(resolveAppDomain(normalized.origin, { signal }), signal);
+      : await awaitWithSignal(resolveAppDomain(normalized.origin, {
+        signal,
+        onStoreLookup: ({ store, url }) => {
+          discovery.store = store;
+          discovery.storeUrl = storeOf(normalized.origin.storeurl) === store ? normalized.origin.storeurl : url;
+          discovery.lookupAttempted = true;
+        }
+      }), signal);
+    discovery.domain = resolved.domain;
+    discovery.resolvedFrom = resolved.resolvedFrom;
 
     if (!resolved.domain) {
       return res.status(422).json({
         reason: "origin_domain_required",
+        discovery,
         error: resolved.resolutionError?.message || `Could not determine where ${normalized.origin.file} lives for this request.`,
         ...(resolved.resolutionError ? { resolutionError: resolved.resolutionError } : {}),
         origin: normalized.origin
@@ -152,13 +174,17 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
     }
 
     const origin = { ...normalized.origin, ...resolved };
+    discovery.fileStatus = "fetching";
     const adsTarget = await awaitWithSignal(validateExternalUrl(`https://${origin.domain}/${origin.file}`), signal);
     // origin.domain may still carry a raw user-supplied override (e.g. one with a stray
     // path segment); adsTarget.hostname is what was actually validated and fetched, so
     // the reported origin must match the file that was actually read, not the raw input.
     origin.domain = adsTarget.hostname;
+    discovery.domain = adsTarget.hostname;
+    discovery.fileUrl = adsTarget.url.toString();
     const ownerFile = `${adsTarget.hostname}/${origin.file}`;
     const ownerText = await awaitWithSignal(fetchText(adsTarget, signal), signal);
+    discovery.fileStatus = "fetched";
     const ownerVariables = parseAdsTxtVariables(ownerText);
     const ownerDomain = normalizeHostname(ownerVariables.ownerdomain?.[0]) || adsTarget.hostname;
     const adsEntries = tagAdsEntries(parseAdsTxt(ownerText), ownerFile, ownerDomain);
@@ -236,17 +262,19 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
       });
     }
 
-    return res.json({ origin, warnings: normalized.warnings, ...result });
+    return res.json({ origin, discovery, warnings: normalized.warnings, ...result });
   } catch (error) {
     if (controller.signal.aborted) {
       return;
     }
 
+    if (discovery?.fileStatus === "fetching") discovery.fileStatus = "failed";
     if (budget.signal.aborted) {
-      return res.status(504).json({ reason: "audit_budget_exceeded", error: "The audit exceeded its time budget while resolving the origin or fetching authorization files." });
+      return res.status(504).json({ reason: "audit_budget_exceeded", discovery, error: "The audit exceeded its time budget while resolving the origin or fetching authorization files." });
     }
 
     return res.status(error.statusCode || 500).json({
+      discovery,
       error: error.message || "Audit failed."
     });
   } finally {

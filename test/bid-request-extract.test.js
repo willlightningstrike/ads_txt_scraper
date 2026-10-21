@@ -9,6 +9,32 @@ const modulePath = pathToFileURL(
 
 const load = () => import(modulePath);
 
+test("JSON formatting expands nested requests without changing values", async () => {
+  const { formatJson } = await load();
+  assert.equal(typeof formatJson, "function");
+  const raw = '{"app":{"bundle":"B075NTHVJW"},"items":[{},[],true,null]}';
+  const formatted = formatJson(raw);
+  assert.match(formatted, /\n  "app": \{\n    "bundle": "B075NTHVJW"/);
+  assert.deepEqual(JSON.parse(formatted), JSON.parse(raw));
+});
+
+test("formatting preserves large numeric IDs, escapes and duplicate keys verbatim", async () => {
+  const { formatJson } = await load();
+  assert.equal(typeof formatJson, "function");
+  const raw = String.raw`{"id":9007199254740993,"n":1e+30,"id":"second","text":"a \" x, {} [] : \u0061"}`;
+  const formatted = formatJson(raw);
+  assert.ok(formatted.includes("9007199254740993"));
+  assert.ok(formatted.includes("1e+30"));
+  assert.equal((formatted.match(/"id":/g) || []).length, 2);
+  assert.deepEqual(JSON.parse(formatted), JSON.parse(raw));
+});
+
+test("invalid JSON cannot be formatted into a different request", async () => {
+  const { formatJson } = await load();
+  assert.equal(typeof formatJson, "function");
+  assert.throws(() => formatJson('{"app":'), SyntaxError);
+});
+
 const FULL_REQUEST = {
   id: "1a2b3c",
   at: 1,

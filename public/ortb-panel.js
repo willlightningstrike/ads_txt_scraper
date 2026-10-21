@@ -1,5 +1,5 @@
-import { reduceBidRequest } from "/bid-request-extract.js";
-import { escapeHtml, setLatestPayload, startRequest, isCurrentRequest, finishRequest, describeFailure } from "/app.js";
+import { reduceBidRequest, formatJson } from "/bid-request-extract.js";
+import { escapeHtml, setLatestPayload, startRequest, isCurrentRequest, finishRequest, describeFailure, showMode } from "/app.js";
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 
@@ -14,6 +14,82 @@ const input = document.getElementById("ortb-input");
 const fileInput = document.getElementById("ortb-file");
 const extractCard = document.getElementById("ortb-extract");
 const message = document.getElementById("ortb-message");
+const lineNumbers = document.getElementById("editor-lines");
+const editorStats = document.getElementById("editor-stats");
+const discoveryStatus = document.getElementById("discovery-status");
+let editVersion = 0;
+let overrideIdentity = null;
+
+// Keep the gutter aligned when the user resizes the textarea or expands the editor.
+if (typeof ResizeObserver !== "undefined") {
+  new ResizeObserver(() => { lineNumbers.style.maxHeight = `${input.clientHeight}px`; }).observe(input);
+}
+
+function updateEditor() {
+  const count = input.value.split("\n").length;
+  lineNumbers.textContent = Array.from({ length: count }, (_, index) => index + 1).join("\n");
+  lineNumbers.scrollTop = input.scrollTop;
+  const kb = new TextEncoder().encode(input.value).length / 1024;
+  editorStats.textContent = input.value ? `${count} ${count === 1 ? "line" : "lines"} / ${kb.toFixed(1)} KB` : "No request loaded";
+}
+
+function formatInput(silent = false) {
+  if (!input.value.trim()) return;
+  try {
+    input.value = formatJson(input.value);
+    input.scrollTop = 0;
+    refreshExtract();
+  } catch {
+    updateEditor();
+    if (!silent) setMessage("Enter valid JSON before formatting. Your text has been kept.", "error");
+  }
+}
+
+document.getElementById("format-json").addEventListener("click", () => formatInput());
+document.getElementById("expand-editor").addEventListener("click", () => {
+  const workbench = document.getElementById("request-workbench");
+  const button = document.getElementById("expand-editor");
+  const expanded = workbench.dataset.expanded !== "true";
+  workbench.dataset.expanded = String(expanded);
+  button.setAttribute("aria-expanded", String(expanded));
+  button.textContent = expanded ? "Restore layout" : "Expand editor";
+});
+input.addEventListener("scroll", () => { lineNumbers.scrollTop = input.scrollTop; });
+input.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+    event.preventDefault();
+    if (!document.getElementById("ortb-submit").disabled) form.requestSubmit();
+  }
+});
+input.addEventListener("paste", (event) => {
+  const text = event.clipboardData?.getData("text/plain");
+  if (!text) return;
+  const next = input.value.slice(0, input.selectionStart) + text + input.value.slice(input.selectionEnd);
+  try {
+    const formatted = formatJson(next);
+    event.preventDefault();
+    input.value = formatted;
+    input.setSelectionRange(0, 0);
+    input.scrollTop = 0;
+    refreshExtract();
+  } catch { /* Keep the browser's native paste for incomplete or invalid JSON. */ }
+});
+
+async function loadFile(file) {
+  if (input.disabled) return;
+  if (file.size > MAX_UPLOAD_BYTES) {
+    setMessage(`That file is ${(file.size / 1024 / 1024).toFixed(1)} MB. The limit is 5 MB.`, "error");
+    return;
+  }
+  const version = ++editVersion;
+  try {
+    const text = await file.text();
+    if (version !== editVersion || input.disabled) return;
+    input.value = text;
+    refreshExtract();
+    formatInput(true);
+  } catch { if (version === editVersion) setMessage("Could not read this file. Try uploading it again.", "error"); }
+}
 
 fileInput.addEventListener("change", async () => {
   const file = fileInput.files && fileInput.files[0];
@@ -21,19 +97,8 @@ fileInput.addEventListener("change", async () => {
     return;
   }
 
-  // Checked before reading: a multi-hundred-megabyte file would otherwise be read into
-  // memory and parsed before anyone could tell the user it was too big.
-  if (file.size > MAX_UPLOAD_BYTES) {
-    setMessage(`That file is ${(file.size / 1024 / 1024).toFixed(1)} MB. The limit is 5 MB.`, "error");
-    fileInput.value = "";
-    return;
-  }
-
-  input.value = await file.text();
-  // Cleared on the success path too, not just the oversize path: without this, re-picking
-  // the same filename (e.g. after editing it on disk) fires no "change" event at all.
+  await loadFile(file);
   fileInput.value = "";
-  refreshExtract();
 });
 
 input.addEventListener("input", refreshExtract);
@@ -50,12 +115,7 @@ input.addEventListener("drop", async (event) => {
     return;
   }
   event.preventDefault();
-  if (file.size > MAX_UPLOAD_BYTES) {
-    setMessage(`That file is ${(file.size / 1024 / 1024).toFixed(1)} MB. The limit is 5 MB.`, "error");
-    return;
-  }
-  input.value = await file.text();
-  refreshExtract();
+  await loadFile(file);
 });
 
 function parseCurrent() {
@@ -72,9 +132,13 @@ function parseCurrent() {
 }
 
 function refreshExtract() {
+  editVersion += 1;
+  updateEditor();
   const reduced = parseCurrent();
+  document.getElementById("inspector-empty").hidden = Boolean(reduced && reduced !== "invalid");
 
   if (reduced === null) {
+    overrideIdentity = null;
     extractCard.hidden = true;
     setMessage("");
     return;
@@ -98,6 +162,10 @@ function refreshExtract() {
 function schainNodes(reduced) {
   const rawNodes = reduced.source?.ext?.schain?.nodes ?? reduced.source?.schain?.nodes;
   return Array.isArray(rawNodes) ? rawNodes : [];
+}
+
+function sellerField(value, fallback) {
+  return (typeof value === "string" && value) || typeof value === "number" ? value : fallback;
 }
 
 // Mirrors lib/ortb.js's extractOrigin precedence (site, then app, then dooh) so the
@@ -132,34 +200,38 @@ function renderExtractCard(reduced) {
       : site.domain || hostOf(site.page);
   // When the store URL names a store the server resolves on its own, a missing app.domain
   // is not something the user has to supply. This only shapes the prompt: the server
-  // still decides, and a failed lookup reopens the card at the field (submit handler).
+  // still decides, and a failed lookup restores the inspector (submit handler).
   const autoStore = kind === "app" && !domain ? autoResolvingStore(app.storeurl, app.bundle) : null;
-  const needsInput = !domain && !autoStore;
   const file = kind === "app" ? "app-ads.txt" : "ads.txt";
   const inventoryLabel = kind === "app" ? "App" : kind === "dooh" ? "DOOH" : "Site";
+  const identity = JSON.stringify([kind, domain ?? null,
+    kind === "app" ? [app.bundle ?? null, app.storeurl ?? null] : kind === "site" ? site.page ?? null : null]);
+  const override = identity === overrideIdentity ? getOverride() : "";
+  overrideIdentity = identity;
+  const store = kind === "app" ? autoResolvingStore(app.storeurl, app.bundle) : null;
 
   extractCard.hidden = false;
   extractCard.innerHTML = `
-    <details class="extract-card__details" ${needsInput ? "open" : ""}>
-      <summary>Extracted from this request${needsInput
-        ? " — 1 needs input"
-        : autoStore ? ` — automatic ${escapeHtml(autoStore)} developer-domain lookup` : ""}</summary>
       <dl class="extract-card__rows">
         <dt>Inventory</dt><dd>${escapeHtml(inventoryLabel)}</dd>
         ${kind === "app"
-          ? `<dt>Bundle</dt><dd>${escapeHtml(app.bundle || "—")}</dd>
-             <dt>Store URL</dt><dd>${escapeHtml(app.storeurl || "—")}</dd>`
+          ? `<dt>App store</dt><dd>${escapeHtml(store || "Not identified")}</dd>
+             <dt>Bundle</dt><dd>${escapeHtml(app.bundle || "—")}</dd>
+             ${app.storeurl ? `<dt>Listing</dt><dd>${linkTo(app.storeurl, "Open store listing")}</dd>` : ""}`
           : `<dt>Domain</dt><dd>${escapeHtml(domain || "—")}</dd>`}
         ${partner ? `<dt>Inventory partner</dt><dd>${escapeHtml(partner)}</dd>` : ""}
         <dt>Supply chain</dt><dd>${nodes.length} node${nodes.length === 1 ? "" : "s"}</dd>
       </dl>
+      ${autoStore ? `<p class="lookup-plan">Will check ${escapeHtml(autoStore)} for the developer domain.</p>` : domain ? `<p class="lookup-plan">Use ${escapeHtml(domain)} from the request. No store lookup needed.</p>` : `<p class="lookup-plan">A developer or publisher domain is needed.</p>`}
+      ${nodes.length ? `<div class="declared-chain"><h3>Advertising systems declared in this request</h3><ol>${nodes.map((node) => `<li>${escapeHtml(sellerField(node?.asi, "Unknown"))}<span>${escapeHtml(sellerField(node?.sid, "No account ID"))}</span></li>`).join("")}</ol></div>` : ""}
       ${!domain ? originPrompt(kind, file, app.storeurl, autoStore) : ""}
-    </details>
   `;
 
   const overrideField = document.getElementById("ortb-origin-domain");
   const target = document.getElementById("ortb-resolved-target");
   if (overrideField && target) {
+    overrideField.value = override;
+    updateResolvedTarget(override, file, target);
     overrideField.addEventListener("input", () => {
       updateResolvedTarget(overrideField.value.trim(), file, target);
     });
@@ -172,16 +244,18 @@ function updateResolvedTarget(domainValue, file, target) {
 
 // Mirrors server store recognition for the prompt only; the server resolves the domain.
 const AUTO_RESOLVING_STORES = [
-  ["App Store", ["apps.apple.com", "itunes.apple.com"]],
-  ["Roku", ["channelstore.roku.com"]],
-  ["LG", ["lgappstv.com"]],
-  ["Samsung", ["samsung.com"]],
-  ["Amazon Fire TV", ["amazon.com"]]
+  ["Apple App Store", ["apps.apple.com", "itunes.apple.com"]],
+  ["Google Play", ["play.google.com"]],
+  ["Roku Channel Store", ["channelstore.roku.com"]],
+  ["LG Content Store", ["lgappstv.com"]],
+  ["Samsung Apps", ["samsung.com"]],
+  ["Vizio App Catalog", ["vizio.com"]],
+  ["Amazon Appstore (Fire TV)", ["amazon.com"]]
 ];
 
 function autoResolvingStore(storeurl, bundle) {
   if (!storeurl && typeof bundle === "string" && /^B[A-Z0-9]{9}$/i.test(bundle.trim())) {
-    return "Amazon Fire TV";
+    return "Amazon Appstore (Fire TV)";
   }
   let host;
   try {
@@ -215,9 +289,7 @@ function originPrompt(kind, file, storeurl, autoStore = null) {
       </label>
       <p class="extract-card__hint">
         ${autoStore
-          ? autoStore === "Amazon Fire TV"
-            ? "We will try the Amazon listing, then a verified app mapping if available. If neither resolves the app, enter its developer domain. We will fetch"
-            : `Looked up automatically from the ${escapeHtml(autoStore)} listing. Enter a domain only to override it, and we will fetch`
+          ? `We will check ${escapeHtml(autoStore)} and use a verified mapping if available. Enter a domain to skip the store lookup. File to fetch:`
           : `Not in the bid request. ${escapeHtml(file)} ${escapeHtml(explanation)}. Enter the domain and we will fetch`}
         <code id="ortb-resolved-target">https://&lt;domain&gt;/${escapeHtml(file)}</code>.
         ${storeLink}
@@ -274,6 +346,8 @@ const adsTxtUrlField = document.getElementById("adsTxtUrl");
 
 function goToAdsTxtForm(text) {
   setMessage(text, "error");
+  showMode("seller");
+  document.getElementById("form-message").textContent = text;
   adsTxtUrlField.focus();
   adsTxtUrlField.scrollIntoView({ behavior: "smooth", block: "center" });
 }
@@ -300,6 +374,7 @@ form.addEventListener("submit", async (event) => {
 
   setMessage("Auditing...");
   const request = startRequest(CLIENT_TIMEOUT_MS, "Audit");
+  document.getElementById("report-title").scrollIntoView({ block: "start" });
 
   try {
     const response = await fetch("/api/audit-chain", {
@@ -315,6 +390,7 @@ form.addEventListener("submit", async (event) => {
     const payload = await response.json();
     if (!isCurrentRequest(request)) return;
     request.controller.signal.throwIfAborted();
+    renderDiscovery(payload.discovery, payload.error);
 
     // A request with no schain has nothing to audit, so hand the user to the existing
     // two-field form rather than leaving them at a dead end. That form takes a full URL
@@ -325,10 +401,10 @@ form.addEventListener("submit", async (event) => {
     }
 
     if (payload.reason === "origin_domain_required") {
-      // Even a supported store's lookup can fail (a listing without the tag), and the
-      // card starts collapsed for those — so reopen it with the cursor in the field.
-      extractCard.querySelector("details")?.setAttribute("open", "");
-      document.getElementById("ortb-origin-domain")?.focus();
+      // Restore the inspector so the manual domain field is available after a failure.
+      document.getElementById("request-workbench").dataset.expanded = "false";
+      document.getElementById("expand-editor").setAttribute("aria-expanded", "false");
+      document.getElementById("expand-editor").textContent = "Expand editor";
     }
 
     if (!response.ok) {
@@ -340,12 +416,15 @@ form.addEventListener("submit", async (event) => {
     setMessage("Audit complete.", "success");
   } catch (error) {
     if (isCurrentRequest(request)) {
+      discoveryStatus.hidden = false;
+      discoveryStatus.dataset.state = "failed";
+      discoveryStatus.innerHTML = `<div><h3>Lookup not completed</h3><p>${escapeHtml(describeFailure(error, request))}</p></div><p>The server did not return a lookup outcome. No store or file result has been confirmed.</p>`;
       setMessage(describeFailure(error, request), request.reason === "cancelled" ? "neutral" : "error");
     }
   } finally {
     // Only the current request owns this shared surface, including error cleanup.
     if (finishRequest(request) && resultsPanel.hidden) {
-      emptyState.hidden = false;
+      emptyState.hidden = !discoveryStatus.hidden;
     }
   }
 });
@@ -433,7 +512,7 @@ function renderHopDetail(hop, payload) {
   return `
     <article class="chain-detail chain-detail--${escapeHtml(hop.verdict)}">
       <header class="chain-detail__head">
-        <span>hop ${hop.index + 1} &middot; ${escapeHtml(hop.asi)} &middot; sid ${escapeHtml(hop.sid)}</span>
+        <span>Hop ${hop.index + 1}: ${escapeHtml(hop.asi)} <small>Account ${escapeHtml(hop.sid)}</small></span>
         <span class="badge badge--${escapeHtml(hop.verdict)}">${escapeHtml(hop.verdict)}</span>
       </header>
       ${checks.filter(([key]) => hop.checks[key].status !== "skip").map(([key, label, links]) => `
@@ -445,8 +524,30 @@ function renderHopDetail(hop, payload) {
             : ""}
         </div>
       `).join("")}
-      ${hop.seller ? `<pre class="chain-detail__raw">${escapeHtml(JSON.stringify(hop.seller, null, 2))}</pre>` : ""}
-      ${hop.adsTxtLine ? `<pre class="chain-detail__raw">${escapeHtml(hop.adsTxtLine)}</pre>` : ""}
+      ${hop.seller || hop.adsTxtLine ? `<details class="chain-evidence"><summary>View source records</summary>${hop.seller ? `<pre class="chain-detail__raw">${escapeHtml(JSON.stringify(hop.seller, null, 2))}</pre>` : ""}${hop.adsTxtLine ? `<pre class="chain-detail__raw">${escapeHtml(hop.adsTxtLine)}</pre>` : ""}</details>` : ""}
     </article>
   `;
+}
+
+function renderDiscovery(discovery, error) {
+  if (!discovery) return;
+  const labels = { amazon: "Amazon Appstore (Fire TV)", apple: "Apple App Store", google: "Google Play", lg: "LG Content Store", roku: "Roku Channel Store", samsung: "Samsung Apps", vizio: "Vizio App Catalog" };
+  const store = labels[discovery.store];
+  const found = discovery.fileStatus === "fetched";
+  const failedFile = discovery.fileStatus === "failed";
+  const title = found ? `${discovery.file} found` : failedFile ? `${discovery.file} could not be fetched` : "Developer domain not resolved";
+  const storeResult = store ? `${store} ${discovery.lookupAttempted ? "checked" : "not queried"}` : "No app-store lookup";
+  const method = discovery.resolvedFrom === "known-map" ? "Used a verified app mapping."
+    : discovery.resolvedFrom === "user" ? "Used your manual domain."
+    : ["store-listing", "itunes"].includes(discovery.resolvedFrom) ? "Developer domain found in store metadata."
+    : discovery.domain ? "Used the domain supplied in the bid request."
+    : discovery.lookupAttempted ? "The lookup did not provide a usable developer domain."
+    : "Supply a developer or publisher domain to continue.";
+  discoveryStatus.hidden = false;
+  discoveryStatus.dataset.state = found ? "found" : "failed";
+  discoveryStatus.innerHTML = `
+    <div><h3>${escapeHtml(title)}</h3><p>${found ? error ? "Authorization file retrieved. The audit could not be completed." : "Authorization file retrieved. Seller-chain results are shown below." : failedFile ? "The domain resolved, but the authorization file was unavailable." : "No authorization file was fetched."}</p></div>
+    <div><p class="discovery-title">${escapeHtml(storeResult)}</p><p>${escapeHtml(method)}${discovery.storeUrl && discovery.lookupAttempted ? ` ${linkTo(discovery.storeUrl, "View lookup source")}` : ""}</p>
+      ${discovery.fileUrl ? `<span class="discovery-file">${linkTo(discovery.fileUrl, discovery.fileUrl)}</span>` : ""}</div>
+    ${error ? `<p class="discovery-error">${escapeHtml(error)}</p>` : ""}`;
 }
