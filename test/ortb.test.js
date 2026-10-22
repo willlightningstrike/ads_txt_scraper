@@ -393,6 +393,15 @@ for (const kind of ["site", "app"]) {
   });
 }
 
+test("an inventory partner that is not a bare hostname is ignored", () => {
+  for (const value of ["partner.example/x?", "partner.example#", "partner.example?q", "user@partner.example", "partner.example:8443", "partner.example\\x", "partner example", "https://partner.example"]) {
+    for (const site of [{ inventorypartnerdomain: value }, { ext: { inventorypartnerdomain: value } }]) {
+      const result = extractBidRequest({ site: { domain: "owner.example", ...site } });
+      assert.equal(result.origin.inventoryPartnerDomain, null, value);
+    }
+  }
+});
+
 test("site inventory does not inherit an app's nested inventory partner", () => {
   const result = extractBidRequest({
     site: { domain: "owner.example" },

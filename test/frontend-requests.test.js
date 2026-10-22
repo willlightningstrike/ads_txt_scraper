@@ -181,6 +181,24 @@ for (const kind of ["site", "app"]) {
   });
 }
 
+test("the request inspector compares the partner with a URL-form site.domain's host", async (t) => {
+  const { el } = await page(t);
+  el("ortb-input").value = JSON.stringify({ site: {
+    domain: "https://Owner.Example/news", ext: { inventorypartnerdomain: "owner.example" }
+  } });
+  el("ortb-input").listeners.input();
+  assert.doesNotMatch(el("ortb-extract").innerHTML, /Inventory partner/);
+});
+
+test("the request inspector hides a partner that is not a bare hostname", async (t) => {
+  const { el } = await page(t);
+  for (const value of ["partner.example/x?", "partner.example#", "user@partner.example", "partner.example:8443"]) {
+    el("ortb-input").value = JSON.stringify({ site: { domain: "owner.example", inventorypartnerdomain: value } });
+    el("ortb-input").listeners.input();
+    assert.doesNotMatch(el("ortb-extract").innerHTML, /Inventory partner/, value);
+  }
+});
+
 test("the request inspector uses only the selected inventory's partner", async (t) => {
   const { el } = await page(t);
   el("ortb-input").value = JSON.stringify({

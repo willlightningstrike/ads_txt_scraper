@@ -212,7 +212,7 @@ If the seller ID does not appear anywhere in the `ads.txt` file, the report says
 npm test
 ```
 
-The suite runs on Node's built-in `node --test` runner and currently has 282 tests across fourteen files. It covers:
+The suite runs on Node's built-in `node --test` runner and currently has 286 tests across fourteen files. It covers:
 
 - the SSRF/URL-validation layer: private IP detection, IPv6 handling, DNS pinning
 - ads.txt and sellers.json parsing, and the `sellers.json` LRU/TTL cache
@@ -352,7 +352,7 @@ public/ortb-panel.js               Bid-request editor, request inspector, discov
 public/bid-request-extract.js      Client-side reduction of a bid request to allowed fields; lossless JSON formatting
 public/style.css                   Styles
 docs/screenshot.jpg                README screenshot
-test/                              282 tests across fourteen files (node --test), including route,
+test/                              286 tests across fourteen files (node --test), including route,
                                     store-resolution, audit-budget and frontend request-lifecycle tests
 ```
 

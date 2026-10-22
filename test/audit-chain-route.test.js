@@ -483,6 +483,21 @@ for (const [kind, file] of [["site", "ads.txt"], ["app", "app-ads.txt"]]) {
   }
 }
 
+test("an inventory partner naming the resolved origin itself is not a partnership", async () => {
+  stubOutbound({ files: { "https://dailynews.example/app-ads.txt": ADS_TXT } });
+  const response = await axios.post(`${baseUrl}/api/audit-chain`, {
+    bidRequest: {
+      app: { bundle: "com.unmapped.app", ext: { inventorypartnerdomain: "DailyNews.Example." } },
+      source: { schain: SCHAIN }
+    },
+    originDomainOverride: "dailynews.example"
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.data.origin.inventoryPartnerDomain, null);
+  assert.equal(response.data.verdict, "pass");
+  assert.ok(!response.data.chainChecks.some((item) => item.code.startsWith("inventory_partner_")));
+});
+
 test("a declared inventory partner's ads.txt authorizes the schain", async () => {
   stubOutbound({ adsTxtByHost: {
     "dailynews.example": "INVENTORYPARTNERDOMAIN=partner.example\nother.com, 1, DIRECT\n",

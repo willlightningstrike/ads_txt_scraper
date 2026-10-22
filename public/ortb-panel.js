@@ -193,7 +193,13 @@ function inventoryPartnerDomain(inventory, originDomain) {
   };
   const normalize = (value) => text(value).toLowerCase().replace(/\.+$/, "");
   const partner = normalize(text(inventory?.inventorypartnerdomain) || text(inventory?.ext?.inventorypartnerdomain));
-  return partner && partner !== normalize(originDomain) ? partner : null;
+  if (!partner || /[/?#@:\\\s]/.test(partner)) return null;
+  return partner !== normalize(originDomain) ? partner : null;
+}
+
+// lib/ortb.js's resolveSiteDomain: a URL in site.domain is reduced to its host.
+function siteDomainHost(value) {
+  return typeof value === "string" && value.includes("/") ? hostOf(value) || value : value;
 }
 
 function renderExtractCard(reduced) {
@@ -208,7 +214,8 @@ function renderExtractCard(reduced) {
       ? dooh.domain
       : site.domain || hostOf(site.page);
   // Show only the selected inventory's partner, which authorizes a second ads.txt lookup.
-  const partner = kind === "dooh" ? null : inventoryPartnerDomain(reduced[kind], domain);
+  const partner = kind === "dooh" ? null
+    : inventoryPartnerDomain(reduced[kind], kind === "site" ? siteDomainHost(domain) : domain);
   // When the store URL names a store the server resolves on its own, a missing app.domain
   // is not something the user has to supply. This only shapes the prompt: the server
   // still decides, and a failed lookup restores the inspector (submit handler).

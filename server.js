@@ -180,6 +180,11 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
     // path segment); adsTarget.hostname is what was actually validated and fetched, so
     // the reported origin must match the file that was actually read, not the raw input.
     origin.domain = adsTarget.hostname;
+    // extractBidRequest can only drop a self-named partner when the request declares the
+    // domain; one resolved from a store or override is only known here.
+    if (origin.inventoryPartnerDomain === adsTarget.hostname) {
+      origin.inventoryPartnerDomain = null;
+    }
     discovery.domain = adsTarget.hostname;
     discovery.fileUrl = adsTarget.url.toString();
     const ownerFile = `${adsTarget.hostname}/${origin.file}`;
