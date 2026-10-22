@@ -11,16 +11,3 @@ logs/
 
 # macOS
 .DS_Store
-
-# Internal working notes, not for publication
-implementation_plan.md
-bug_report_*.md
-store_notes.md
-CLAUDE.md
-docs/superpowers/
-
-# Agent scratch: brainstorm mockups, execution ledgers, review packages
-.superpowers/
-
-# Local agent/editor config
-.claude/
