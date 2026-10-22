@@ -159,9 +159,12 @@ function refreshExtract() {
 // property. Coercing to an array here means every reader of `nodes` downstream gets a
 // real array, and `.length` is always numeric. This is the one place that reaches into
 // `reduced.source` for the chain nodes — every other caller goes through this helper.
+// Like lib/ortb.js's extractSchain, the ext form is used only when it carries a nodes
+// array; otherwise a valid native source.schain still counts.
 function schainNodes(reduced) {
-  const rawNodes = reduced.source?.ext?.schain?.nodes ?? reduced.source?.schain?.nodes;
-  return Array.isArray(rawNodes) ? rawNodes : [];
+  const ext = reduced.source?.ext?.schain;
+  const chosen = Array.isArray(ext?.nodes) ? ext : reduced.source?.schain;
+  return Array.isArray(chosen?.nodes) ? chosen.nodes : [];
 }
 
 function sellerField(value, fallback) {

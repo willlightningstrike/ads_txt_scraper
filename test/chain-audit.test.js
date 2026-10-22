@@ -55,6 +55,18 @@ test("a fully valid chain passes every hop", async () => {
   assert.equal(result.summary.pass, 2);
 });
 
+test("a seller domain related only by suffix warns instead of passing alignment", async () => {
+  const result = await run({}, {
+    loadSellers: async (url) => url.includes("exchange-a")
+      ? { sellers: [{ seller_id: "12345", name: "Daily News", domain: "media.dailynews.example", seller_type: "PUBLISHER" }] }
+      : loadSellers(url)
+  });
+
+  assert.equal(result.hops[0].checks.sellerDomainAlignment.status, "warn");
+  assert.match(result.hops[0].checks.sellerDomainAlignment.message, /does not establish common ownership/);
+  assert.equal(result.hops[0].verdict, "pass");
+});
+
 test("hop 0 expects PUBLISHER and hops after it expect INTERMEDIARY", async () => {
   const result = await run();
 

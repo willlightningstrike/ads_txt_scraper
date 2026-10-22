@@ -130,6 +130,7 @@ summary { cursor: pointer; }
 .chain-detail__check strong { font-weight: 500; }
 .chain-detail__check p { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
 .chain-detail__check--fail strong { color: var(--danger); }
+.chain-detail__check--warn strong { color: var(--warn); }
 .chain-detail__check-sources { grid-column: 2; display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; }
 .chain-evidence { padding: 13px 20px; font-size: 12px; color: var(--muted); }
 .chain-detail__raw { font: 12px/1.7 var(--mono); overflow-x: auto; margin: 12px 0 0; color: #405775; background: #f7f9fc; padding: 14px; border-radius: 4px; }

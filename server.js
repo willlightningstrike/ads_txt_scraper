@@ -27,9 +27,23 @@ const { awaitWithSignal } = require("./lib/abort");
 const app = express();
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = process.env.PORT || 3000;
-const MAX_CONCURRENT_LOOKUPS = Number(process.env.MAX_CONCURRENT_LOOKUPS || 6);
+const MAX_CONCURRENT_LOOKUPS = positiveIntegerSetting("MAX_CONCURRENT_LOOKUPS", 6);
 // One deadline covers resolution, authorization files, and the entire chain walk.
-const AUDIT_BUDGET_MS = Number(process.env.AUDIT_BUDGET_MS || 120_000);
+const AUDIT_BUDGET_MS = positiveIntegerSetting("AUDIT_BUDGET_MS", 120_000);
+
+// "0" or "abc" would otherwise survive `|| default` and start zero lookup workers, which
+// returns empty records, so a bad value stops the server instead.
+function positiveIntegerSetting(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`${name} must be a positive integer, got "${raw}".`);
+  }
+  return value;
+}
 
 // No CORS middleware: the frontend is served from this same origin, so allowing
 // other origins would only let arbitrary pages drive this server's outbound fetches.

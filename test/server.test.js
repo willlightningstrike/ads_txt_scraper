@@ -1,11 +1,27 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
+const path = require("node:path");
 
 const {
   createPinnedLookup,
   isPrivateIp,
   validateExternalUrl
 } = require("../server");
+
+for (const name of ["MAX_CONCURRENT_LOOKUPS", "AUDIT_BUDGET_MS"]) {
+  test(`the server refuses to start with a non-positive or non-numeric ${name}`, () => {
+    for (const value of ["0", "-1", "abc", "1.5"]) {
+      const result = spawnSync(process.execPath, ["-e", "require('./server')"], {
+        cwd: path.join(__dirname, ".."),
+        env: { ...process.env, [name]: value },
+        encoding: "utf8"
+      });
+      assert.notEqual(result.status, 0, `${name}=${value}`);
+      assert.match(result.stderr, new RegExp(`${name} must be a positive integer`));
+    }
+  });
+}
 
 test("isPrivateIp blocks private and loopback IPv6 forms", () => {
   assert.equal(isPrivateIp("fc00::1"), true);

@@ -89,7 +89,7 @@ The server walks every node in the bid request's supply chain object (`source.ex
 - the declared `seller_type` agrees with the actual ads.txt relationship: a complete chain needs a `DIRECT` first hop, and later hops need `RESELLER`
 - the hop's seller domain links back to the previous hop's ad system domain (the chain link check)
 - the hop is declared in the publisher's or app developer's `ads.txt`/`app-ads.txt`
-- a complete chain's first seller aligns with the business identity of the authorizing file: its `OWNERDOMAIN`, or its host when that variable is absent
+- a complete chain's first seller aligns with the business identity of the authorizing file: its `OWNERDOMAIN`, or its host when that variable is absent. An identical domain passes; a parent/child suffix relationship is only a warning, because without the Public Suffix List it cannot be told apart from two tenants of a shared host such as `github.io`
 
 When the request names an inventory partner (`site.inventorypartnerdomain` / `app.inventorypartnerdomain`, OpenRTB 2.6, or their `site.ext.inventorypartnerdomain` / `app.ext.inventorypartnerdomain` equivalents), the audit also checks the partner arrangement. A nonempty direct field takes precedence; the `ext` field is used when the direct field is absent or blank.
 
@@ -213,7 +213,7 @@ If the seller ID does not appear anywhere in the `ads.txt` file, the report says
 npm test
 ```
 
-The suite runs on Node's built-in `node --test` runner and currently has 291 tests across fourteen files. It covers:
+The suite runs on Node's built-in `node --test` runner and currently has 296 tests across fourteen files. It covers:
 
 - the SSRF/URL-validation layer: private IP detection, IPv6 handling, DNS pinning
 - ads.txt and sellers.json parsing, and the `sellers.json` LRU/TTL cache
@@ -243,6 +243,8 @@ All settings are optional environment variables:
 | `SELLERS_CACHE_SIZE` | `10` | Number of `sellers.json` files held in the LRU cache |
 | `MAX_CONCURRENT_LOOKUPS` | `6` | Max `sellers.json` fetches in flight for one validation |
 | `AUDIT_BUDGET_MS` | `120000` (120 s) | Deadline for `/api/audit-chain` resolution, file retrieval and chain checks |
+
+`MAX_CONCURRENT_LOOKUPS` and `AUDIT_BUDGET_MS` must be positive integers; the server refuses to start otherwise.
 
 Example:
 
@@ -353,7 +355,7 @@ public/ortb-panel.js               Bid-request editor, request inspector, discov
 public/bid-request-extract.js      Client-side reduction of a bid request to allowed fields; lossless JSON formatting
 public/style.css                   Styles
 docs/screenshot.jpg                README screenshot
-test/                              291 tests across fourteen files (node --test), including route,
+test/                              296 tests across fourteen files (node --test), including route,
                                     store-resolution, audit-budget and frontend request-lifecycle tests
 ```
 

@@ -385,8 +385,15 @@ function toBadgeClass(status) {
   }
 }
 
+// Values come from user-pasted JSON, where {"toString": 1} makes String() throw.
 export function escapeHtml(value) {
-  return String(value)
+  let text;
+  try {
+    text = String(value);
+  } catch {
+    text = "";
+  }
+  return text
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")

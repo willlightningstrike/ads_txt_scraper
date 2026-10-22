@@ -199,6 +199,32 @@ test("the request inspector hides a partner that is not a bare hostname", async 
   }
 });
 
+test("a malformed ext schain falls back to a valid native schain, as the server does", async (t) => {
+  const { el, requests, submit } = await page(t);
+  el("ortb-input").value = JSON.stringify({ site: { domain: "audit.example" }, source: {
+    ext: { schain: { nodes: "bad" } },
+    schain: { complete: 1, nodes: [{ asi: "ssp.example", sid: "1" }] }
+  } });
+  el("ortb-input").listeners.input();
+  assert.match(el("ortb-extract").innerHTML, /<dt>Supply chain<\/dt><dd>1 node<\/dd>/);
+  submit("ortb-form");
+  assert.equal(requests.length, 1);
+});
+
+test("hostile coercion values do not break the request inspector", async (t) => {
+  const { el } = await page(t);
+  const hostile = { toString: 1 };
+  for (const request of [
+    { app: { bundle: hostile, storeurl: hostile, domain: hostile } },
+    { site: { domain: hostile, page: hostile } },
+    { dooh: { domain: hostile } }
+  ]) {
+    el("ortb-input").value = JSON.stringify({ ...request, source: { schain: { nodes: [{ asi: hostile, sid: hostile }] } } });
+    assert.doesNotThrow(() => el("ortb-input").listeners.input());
+    assert.match(el("ortb-extract").innerHTML, /<dt>Inventory<\/dt>/);
+  }
+});
+
 test("the request inspector uses only the selected inventory's partner", async (t) => {
   const { el } = await page(t);
   el("ortb-input").value = JSON.stringify({
