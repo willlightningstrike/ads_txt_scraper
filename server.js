@@ -175,7 +175,40 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
 
     const origin = { ...normalized.origin, ...resolved };
     discovery.fileStatus = "fetching";
-    const adsTarget = await awaitWithSignal(validateExternalUrl(`https://${origin.domain}/${origin.file}`), signal);
+    let adsTarget = await awaitWithSignal(validateExternalUrl(`https://${origin.domain}/${origin.file}`), signal);
+    const originChecks = [];
+    discovery.domain = adsTarget.hostname;
+    discovery.fileUrl = adsTarget.url.toString();
+    let ownerText;
+    try {
+      ownerText = await awaitWithSignal(fetchText(adsTarget, signal), signal);
+    } catch (error) {
+      const parent = signal.aborted ? null : storeListingParent(origin.resolvedFrom, adsTarget.hostname, error);
+      if (!parent) {
+        throw error;
+      }
+      const listed = adsTarget.hostname;
+      discovery.fallbackFrom = listed;
+      try {
+        adsTarget = await awaitWithSignal(validateExternalUrl(`https://${parent}/${origin.file}`), signal);
+        discovery.domain = adsTarget.hostname;
+        discovery.fileUrl = adsTarget.url.toString();
+        ownerText = await awaitWithSignal(fetchText(adsTarget, signal), signal);
+      } catch (parentError) {
+        if (signal.aborted) {
+          throw parentError;
+        }
+        throw Object.assign(new Error(`${error.message} Its parent domain was tried too: ${parentError.message}`), {
+          statusCode: parentError.statusCode || error.statusCode
+        });
+      }
+      originChecks.push({
+        code: "origin_parent_domain_fallback",
+        status: "warn",
+        message: `The store listing names ${listed}, whose ${origin.file} returned HTTP ${error.remoteStatus}. ${adsTarget.hostname}/${origin.file} was used instead.`
+      });
+    }
+    discovery.fileStatus = "fetched";
     // origin.domain may still carry a raw user-supplied override (e.g. one with a stray
     // path segment); adsTarget.hostname is what was actually validated and fetched, so
     // the reported origin must match the file that was actually read, not the raw input.
@@ -185,11 +218,7 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
     if (origin.inventoryPartnerDomain === adsTarget.hostname) {
       origin.inventoryPartnerDomain = null;
     }
-    discovery.domain = adsTarget.hostname;
-    discovery.fileUrl = adsTarget.url.toString();
     const ownerFile = `${adsTarget.hostname}/${origin.file}`;
-    const ownerText = await awaitWithSignal(fetchText(adsTarget, signal), signal);
-    discovery.fileStatus = "fetched";
     const ownerVariables = parseAdsTxtVariables(ownerText);
     const ownerDomain = normalizeHostname(ownerVariables.ownerdomain?.[0]) || adsTarget.hostname;
     const adsEntries = tagAdsEntries(parseAdsTxt(ownerText), ownerFile, ownerDomain);
@@ -242,7 +271,7 @@ app.post("/api/audit-chain", express.json({ limit: "512kb" }), async (req, res) 
         adsEntries,
         loadSellers: fetchSellersJson,
         originDomain: adsTarget.hostname,
-        chainChecks: partnerChecks,
+        chainChecks: [...originChecks, ...partnerChecks],
         signal
       }
     );
@@ -304,6 +333,20 @@ if (require.main === module) {
   app.listen(PORT, HOST, () => {
     console.log(`Ads.txt validator running at http://${HOST}:${PORT}`);
   });
+}
+
+// Store listings sometimes name a product subdomain whose host refuses app-ads.txt while
+// the developer publishes it one level up (DirecTV's Samsung listing names
+// streamtv.directv.com; the file is at directv.com). Only store metadata is second-guessed
+// this way, never a domain the request declared or the user typed, and only one level:
+// telling a company's parent from a public suffix (co.uk, github.io) needs the Public
+// Suffix List, which is why the fallback is reported as a warning rather than silently.
+function storeListingParent(resolvedFrom, hostname, error) {
+  if (resolvedFrom !== "store-listing" || ![403, 404].includes(error.remoteStatus)) {
+    return null;
+  }
+  const labels = hostname.split(".");
+  return labels.length > 2 && !/^\d+$/.test(labels.at(-1)) ? labels.slice(1).join(".") : null;
 }
 
 // Entries from two ads.txt files are audited together; the tag lets a hop say which

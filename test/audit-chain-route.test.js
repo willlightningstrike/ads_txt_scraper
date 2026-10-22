@@ -39,7 +39,7 @@ test.afterEach(() => {
   dns.promises.lookup = realDnsLookup;
 });
 
-const STUBBED_HOSTNAMES = new Set(["dailynews.example", "exchange-a.com", "partner.example", "www.amazon.com", "tubitv.com", "us.lgappstv.com", "philo.com", "www.vizio.com", "www.paramount.com", "play.google.com", "help.philo.com", "pluto.tv"]);
+const STUBBED_HOSTNAMES = new Set(["dailynews.example", "exchange-a.com", "partner.example", "www.amazon.com", "tubitv.com", "us.lgappstv.com", "philo.com", "www.vizio.com", "www.paramount.com", "play.google.com", "help.philo.com", "pluto.tv", "www.samsung.com", "streamtv.dailynews.example"]);
 
 // Stubs the outbound fetches only. axios.post is untouched, so the test client still works.
 // dailynews.example (RFC 2606 reserved) and exchange-a.com (unregistered) never resolve
@@ -187,6 +187,70 @@ test("the Fire TV Tubi request audits app-ads.txt without a manual domain", asyn
   assert.equal(response.data.discovery.resolvedFrom, "known-map");
   assert.equal(response.data.discovery.fileStatus, "fetched");
   assert.equal(response.data.discovery.fileUrl, "https://tubitv.com/app-ads.txt");
+});
+
+// A Samsung listing naming a subdomain whose app-ads.txt answers with `status`, as
+// DirecTV's listing names streamtv.directv.com while the file lives at directv.com.
+async function auditSubdomainListing(status, { parentFile = ADS_TXT, override } = {}) {
+  stubOutbound({ files: parentFile ? { "https://dailynews.example/app-ads.txt": parentFile } : {} });
+  const outbound = axios.get;
+  const requested = [];
+  axios.get = async (url, options) => {
+    requested.push(url);
+    if (new URL(url).hostname === "www.samsung.com") {
+      return { status: 200, headers: {}, data: '<meta name="appstore:developer_url" content="streamtv.dailynews.example"/>' };
+    }
+    if (url === "https://streamtv.dailynews.example/app-ads.txt") {
+      throw Object.assign(new Error(`Request failed with status code ${status}`), {
+        code: status >= 500 ? "ERR_BAD_RESPONSE" : "ERR_BAD_REQUEST",
+        response: { status }
+      });
+    }
+    return outbound(url, options);
+  };
+  const response = await axios.post(`${baseUrl}/api/audit-chain`, {
+    bidRequest: {
+      app: { bundle: "G17347010659", storeurl: "https://www.samsung.com/us/appstore/app/G17347010659" },
+      source: { schain: SCHAIN }
+    },
+    ...(override ? { originDomainOverride: override } : {})
+  }, { validateStatus: () => true });
+  return { response, requested };
+}
+
+for (const status of [403, 404]) {
+  test(`a store-listed subdomain answering HTTP ${status} falls back to its parent domain`, async () => {
+    const { response } = await auditSubdomainListing(status);
+    assert.equal(response.status, 200);
+    assert.equal(response.data.verdict, "pass");
+    assert.equal(response.data.origin.domain, "dailynews.example");
+    assert.equal(response.data.discovery.domain, "dailynews.example");
+    assert.equal(response.data.discovery.fallbackFrom, "streamtv.dailynews.example");
+    assert.equal(response.data.discovery.fileUrl, "https://dailynews.example/app-ads.txt");
+    const check = response.data.chainChecks.find((item) => item.code === "origin_parent_domain_fallback");
+    assert.equal(check?.status, "warn");
+    assert.match(check.message, new RegExp(`streamtv\\.dailynews\\.example.*HTTP ${status}.*dailynews\\.example/app-ads\\.txt`));
+  });
+}
+
+test("a store-listed subdomain answering another error does not fall back", async () => {
+  const { response, requested } = await auditSubdomainListing(500);
+  assert.equal(response.status, 502);
+  assert.match(response.data.error, /HTTP 500 for streamtv\.dailynews\.example/);
+  assert.ok(!requested.includes("https://dailynews.example/app-ads.txt"));
+});
+
+test("a manually entered subdomain does not fall back to its parent", async () => {
+  const { response, requested } = await auditSubdomainListing(403, { override: "streamtv.dailynews.example" });
+  assert.equal(response.status, 502);
+  assert.ok(!requested.includes("https://dailynews.example/app-ads.txt"));
+});
+
+test("a failed parent-domain fallback reports both files", async () => {
+  const { response } = await auditSubdomainListing(403, { parentFile: null });
+  assert.equal(response.status, 502);
+  assert.equal(response.data.discovery.fileStatus, "failed");
+  assert.match(response.data.error, /HTTP 403 for streamtv\.dailynews\.example.*dailynews\.example/);
 });
 
 test("LG Philo audits its verified app-ads.txt when the listing metadata is empty", async () => {

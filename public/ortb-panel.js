@@ -557,6 +557,7 @@ function renderDiscovery(discovery, error) {
   const storeResult = store ? `${store} ${discovery.lookupAttempted ? "checked" : "not queried"}` : "No app-store lookup";
   const method = discovery.resolvedFrom === "known-map" ? "Used a verified app mapping."
     : discovery.resolvedFrom === "user" ? "Used your manual domain."
+    : discovery.fallbackFrom ? `Store metadata named ${discovery.fallbackFrom}, which did not serve the file, so its parent domain was tried.`
     : ["store-listing", "itunes"].includes(discovery.resolvedFrom) ? "Developer domain found in store metadata."
     : discovery.domain ? "Used the domain supplied in the bid request."
     : discovery.lookupAttempted ? "The lookup did not provide a usable developer domain."

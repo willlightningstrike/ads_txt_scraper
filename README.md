@@ -31,6 +31,7 @@ Store details:
 - **Roku, LG and other numeric IDs:** a bundle is looked up only in the store its URL names. A numeric Roku or LG ID is never sent to Apple, where it could match an unrelated iOS app.
 - **Package mappings:** a curated mapping (currently `tv.pluto.android` → `pluto.tv`) resolves a request with no recognized store URL. If the request has a store URL, that store is queried first and the mapping is used only if the lookup fails.
 - **Bundle with no recognized store URL:** if no mapping applies, the bundle is tried against Apple's lookup API.
+- **Store-listed subdomains:** if a listing's meta tag names a subdomain whose `app-ads.txt` returns HTTP 403 or 404, the parent domain is tried once, and the audit reports it as an `origin_parent_domain_fallback` warning. DirecTV's Samsung listing, for example, names `streamtv.directv.com`, which refuses the file, while `directv.com` serves it. This never applies to a domain the request declares or you type in.
 
 If the domain still can't be found, the panel asks for it.
 
@@ -212,7 +213,7 @@ If the seller ID does not appear anywhere in the `ads.txt` file, the report says
 npm test
 ```
 
-The suite runs on Node's built-in `node --test` runner and currently has 286 tests across fourteen files. It covers:
+The suite runs on Node's built-in `node --test` runner and currently has 291 tests across fourteen files. It covers:
 
 - the SSRF/URL-validation layer: private IP detection, IPv6 handling, DNS pinning
 - ads.txt and sellers.json parsing, and the `sellers.json` LRU/TTL cache
@@ -352,7 +353,7 @@ public/ortb-panel.js               Bid-request editor, request inspector, discov
 public/bid-request-extract.js      Client-side reduction of a bid request to allowed fields; lossless JSON formatting
 public/style.css                   Styles
 docs/screenshot.jpg                README screenshot
-test/                              286 tests across fourteen files (node --test), including route,
+test/                              291 tests across fourteen files (node --test), including route,
                                     store-resolution, audit-budget and frontend request-lifecycle tests
 ```
 
