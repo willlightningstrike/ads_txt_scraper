@@ -185,19 +185,30 @@ function inventoryKind(reduced) {
   return "site";
 }
 
+// Match the server's direct-field precedence and domain normalization for this preview.
+function inventoryPartnerDomain(inventory, originDomain) {
+  const text = (value) => {
+    try { return value == null ? "" : String(value).trim(); }
+    catch { return ""; }
+  };
+  const normalize = (value) => text(value).toLowerCase().replace(/\.+$/, "");
+  const partner = normalize(text(inventory?.inventorypartnerdomain) || text(inventory?.ext?.inventorypartnerdomain));
+  return partner && partner !== normalize(originDomain) ? partner : null;
+}
+
 function renderExtractCard(reduced) {
   const site = reduced.site || {};
   const app = reduced.app || {};
   const dooh = reduced.dooh || {};
   const nodes = schainNodes(reduced);
-  // OpenRTB 2.6 inventory sharing: shown so the user knows a second ads.txt will be read.
-  const partner = reduced.site?.inventorypartnerdomain ?? reduced.app?.inventorypartnerdomain ?? null;
   const kind = inventoryKind(reduced);
   const domain = kind === "app"
     ? app.domain
     : kind === "dooh"
       ? dooh.domain
       : site.domain || hostOf(site.page);
+  // Show only the selected inventory's partner, which authorizes a second ads.txt lookup.
+  const partner = kind === "dooh" ? null : inventoryPartnerDomain(reduced[kind], domain);
   // When the store URL names a store the server resolves on its own, a missing app.domain
   // is not something the user has to supply. This only shapes the prompt: the server
   // still decides, and a failed lookup restores the inspector (submit handler).

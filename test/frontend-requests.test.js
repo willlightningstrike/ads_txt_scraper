@@ -165,6 +165,43 @@ test("a Vizio catalog URL identifies Vizio in the request inspector", async (t) 
   assert.match(el("ortb-extract").innerHTML, /Developer domain \(optional\)/);
 });
 
+for (const kind of ["site", "app"]) {
+  test(`the request inspector shows ${kind}'s nested partner with direct-field precedence`, async (t) => {
+    const { el } = await page(t);
+    for (const [direct, expected] of [[undefined, "partner.example"], ["  ", "partner.example"], [" Direct.Example. ", "direct.example"], ["OWNER.example", null]]) {
+      el("ortb-input").value = JSON.stringify({ [kind]: {
+        domain: "owner.example", inventorypartnerdomain: direct,
+        ext: { inventorypartnerdomain: " Partner.Example. " }
+      } });
+      el("ortb-input").listeners.input();
+      const html = el("ortb-extract").innerHTML;
+      if (expected) assert.ok(html.includes(`<dt>Inventory partner</dt><dd>${expected}</dd>`));
+      else assert.doesNotMatch(html, /Inventory partner/);
+    }
+  });
+}
+
+test("the request inspector uses only the selected inventory's partner", async (t) => {
+  const { el } = await page(t);
+  el("ortb-input").value = JSON.stringify({
+    site: { domain: "owner.example" },
+    app: { inventorypartnerdomain: "direct.example", ext: { inventorypartnerdomain: "nested.example" } }
+  });
+  el("ortb-input").listeners.input();
+  assert.doesNotMatch(el("ortb-extract").innerHTML, /Inventory partner/);
+});
+
+test("malformed inventory partner extensions do not break the request inspector", async (t) => {
+  const { el } = await page(t);
+  for (const kind of ["site", "app"]) {
+    for (const ext of [null, "bad", [], { inventorypartnerdomain: { toString: 1 } }]) {
+      el("ortb-input").value = JSON.stringify({ [kind]: { domain: "owner.example", ext } });
+      assert.doesNotThrow(() => el("ortb-input").listeners.input());
+      assert.doesNotMatch(el("ortb-extract").innerHTML, /Inventory partner/);
+    }
+  }
+});
+
 test("malformed seller fields remain editable without breaking the request inspector", async (t) => {
   const { el } = await page(t);
   el("ortb-input").value = JSON.stringify({ app: { bundle: "B075NTHVJW" }, source: { schain: { nodes: [

@@ -364,6 +364,44 @@ test("app.inventorypartnerdomain is extracted too", () => {
   assert.equal(result.origin.inventoryPartnerDomain, "partner.example");
 });
 
+for (const kind of ["site", "app"]) {
+  test(`${kind}.ext.inventorypartnerdomain is normalized when the direct field is missing or blank`, () => {
+    for (const direct of [undefined, null, "", "  "]) {
+      const result = extractBidRequest({ [kind]: {
+        domain: "owner.example", inventorypartnerdomain: direct,
+        ext: { inventorypartnerdomain: " Partner.Example. " }
+      } });
+      assert.equal(result.origin.inventoryPartnerDomain, "partner.example");
+    }
+  });
+
+  test(`${kind}'s direct inventory partner takes precedence even when it names the origin itself`, () => {
+    for (const [direct, expected] of [[" Direct.Example. ", "direct.example"], ["OWNER.example", null]]) {
+      const result = extractBidRequest({ [kind]: {
+        domain: "owner.example", inventorypartnerdomain: direct,
+        ext: { inventorypartnerdomain: "nested.example" }
+      } });
+      assert.equal(result.origin.inventoryPartnerDomain, expected);
+    }
+  });
+
+  test(`${kind}'s nested partner handles malformed extensions and suppresses the origin itself`, () => {
+    for (const ext of [null, "bad", 42, [], {}, { inventorypartnerdomain: { toString: 1 } }, { inventorypartnerdomain: " OWNER.EXAMPLE. " }]) {
+      const result = extractBidRequest({ [kind]: { domain: "owner.example", ext } });
+      assert.equal(result.origin.inventoryPartnerDomain, null);
+    }
+  });
+}
+
+test("site inventory does not inherit an app's nested inventory partner", () => {
+  const result = extractBidRequest({
+    site: { domain: "owner.example" },
+    app: { domain: "dev.example", ext: { inventorypartnerdomain: "partner.example" } }
+  });
+  assert.equal(result.origin.kind, "site");
+  assert.equal(result.origin.inventoryPartnerDomain, null);
+});
+
 test("inventoryPartnerDomain is null when absent", () => {
   const result = extractBidRequest({ site: { domain: "owner.example" }, source: { ext: { schain: SCHAIN } } });
   assert.equal(result.origin.inventoryPartnerDomain, null);

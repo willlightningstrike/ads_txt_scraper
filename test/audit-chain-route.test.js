@@ -456,6 +456,33 @@ const PARTNER_REQUEST = {
   source: { ext: { schain: SCHAIN } }
 };
 
+for (const [kind, file] of [["site", "ads.txt"], ["app", "app-ads.txt"]]) {
+  for (const declared of [true, false]) {
+    test(`${kind}.ext inventory sharing ${declared ? "authorizes sellers through the partner file" : "requires the owner's partnership declaration"}`, async () => {
+      stubOutbound({ files: {
+        [`https://dailynews.example/${file}`]: declared ? "INVENTORYPARTNERDOMAIN=partner.example" : "other.com, 1, DIRECT",
+        "https://partner.example/ads.txt": ADS_TXT
+      }, sellerDomain: "partner.example" });
+      const response = await axios.post(`${baseUrl}/api/audit-chain`, { bidRequest: {
+        [kind]: { domain: "dailynews.example", ext: { inventorypartnerdomain: " Partner.Example. " } },
+        source: { schain: SCHAIN }
+      } });
+      assert.equal(response.status, 200);
+      assert.equal(response.data.origin.inventoryPartnerDomain, "partner.example");
+      assert.equal(response.data.verdict, declared ? "pass" : "broken");
+      const check = response.data.chainChecks.find((item) => item.code === "inventory_partner_undeclared");
+      if (declared) {
+        assert.equal(check, undefined);
+        assert.equal(response.data.hops[0].checks.adsTxtDeclared.status, "pass");
+        assert.match(response.data.hops[0].checks.adsTxtDeclared.message, /partner\.example\/ads\.txt/);
+        assert.ok(response.data.sources.some((source) => source.url === "https://partner.example/ads.txt"));
+      } else {
+        assert.equal(check?.status, "fail");
+      }
+    });
+  }
+}
+
 test("a declared inventory partner's ads.txt authorizes the schain", async () => {
   stubOutbound({ adsTxtByHost: {
     "dailynews.example": "INVENTORYPARTNERDOMAIN=partner.example\nother.com, 1, DIRECT\n",
